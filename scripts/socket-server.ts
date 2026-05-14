@@ -11,7 +11,11 @@ import { Server } from "socket.io";
 import { ClientToServerEvents, ServerToClientEvents } from "../src/server/socket/events";
 import { verifySocketToken } from "../src/lib/realtime/socket-token";
 import type { InvalidatePublishPayload } from "../src/lib/realtime/publish-invalidate";
-import type { SessionSubscribePayload, WhiteboardStrokePayload } from "../src/server/socket/events";
+import type {
+  MessageNewEventPayload,
+  SessionSubscribePayload,
+  WhiteboardStrokePayload,
+} from "../src/server/socket/events";
 
 function loadEnvFiles() {
   for (const f of [".env.local", ".env"]) {
@@ -95,6 +99,37 @@ const httpServer = createServer((req, res) => {
         if (bKeys.length > 0) {
           io.emit(ServerToClientEvents.RT_INVALIDATE, { keys: bKeys });
         }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/internal/session-message") {
+    const secret = req.headers["x-socket-internal-secret"];
+    if (secret !== INTERNAL_SECRET) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const body = JSON.parse(raw) as MessageNewEventPayload;
+        const sid = typeof body?.sessionId === "string" ? body.sessionId : "";
+        const msg = body?.message;
+        if (!sid || !msg?.id || typeof msg.body !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false }));
+          return;
+        }
+        io.to(sessionRoom(sid)).emit(ServerToClientEvents.MESSAGE_NEW, body);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
       } catch {

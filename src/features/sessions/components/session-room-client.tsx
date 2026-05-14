@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { Clock, MessageSquare, PanelTop, Send, Sparkles, Square, Play, AlertCircle } from "lucide-react";
@@ -15,32 +15,107 @@ import { endSession, getSessionBundle, sendSessionMessage, startSession } from "
 import { SessionMediaRail } from "@/features/sessions/components/session-media-rail";
 import { SessionWhiteboard } from "@/features/sessions/components/session-whiteboard";
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
-import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { useSocketIo } from "@/features/realtime/socket-io-provider";
 import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { AIStreamingText } from "@/features/ai/components/ai-streaming-text";
 import { AIShimmer } from "@/features/ai/components/ai-shimmer";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/feedback/empty-state";
+import { ClientToServerEvents, ServerToClientEvents } from "@/server/socket/events";
+import type { MessageNewEventPayload } from "@/server/socket/events";
 
-export function SessionRoomClient({ sessionId }: { sessionId: string }) {
+type SessionBundle = NonNullable<Awaited<ReturnType<typeof getSessionBundle>>>;
+
+export function SessionRoomClient({
+  sessionId,
+  initialBundle,
+}: {
+  sessionId: string;
+  /** From RSC when load succeeds; `null` means not found (client still refetches once). */
+  initialBundle?: Awaited<ReturnType<typeof getSessionBundle>>;
+}) {
+  const queryClient = useQueryClient();
+  const { socket, connected } = useSocketIo();
   const [body, setBody] = React.useState("");
   const [typing, setTyping] = React.useState(false);
   const tRef = React.useRef<number | null>(null);
 
+  React.useLayoutEffect(() => {
+    if (!socket) return;
+    const join = () => {
+      socket.emit(ClientToServerEvents.SESSION_SUBSCRIBE, { sessionId });
+    };
+    if (socket.connected) join();
+    socket.on("connect", join);
+    return () => {
+      socket.off("connect", join);
+      if (socket.connected) {
+        socket.emit(ClientToServerEvents.SESSION_UNSUBSCRIBE, { sessionId });
+      }
+    };
+  }, [socket, sessionId]);
+
+  React.useEffect(() => {
+    if (!socket) return;
+    const onNew = (payload: MessageNewEventPayload) => {
+      if (payload.sessionId !== sessionId) return;
+      queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => {
+        if (!prev?.viewerId) return prev;
+        if (prev.messages.some((m) => m.id === payload.message.id)) return prev;
+        return {
+          ...prev,
+          messages: [
+            ...prev.messages,
+            {
+              ...payload.message,
+              isMine: payload.message.senderId === prev.viewerId,
+            },
+          ],
+        };
+      });
+    };
+    socket.on(ServerToClientEvents.MESSAGE_NEW, onNew);
+    return () => {
+      socket.off(ServerToClientEvents.MESSAGE_NEW, onNew);
+    };
+  }, [socket, sessionId, queryClient]);
+
+  const initialMeta = React.useMemo(() => {
+    if (initialBundle === undefined) return null;
+    if (initialBundle === null) return null;
+    return { data: initialBundle, updatedAt: Date.now() };
+  }, [initialBundle]);
+
   const pageVisible = usePageVisible();
-  const pollMs = useAdaptiveRefetchInterval(12_000);
+  const pollMs = connected ? false : 4_000;
   const query = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => getSessionBundle(sessionId),
     refetchInterval: pageVisible ? pollMs : false,
     retry: 1,
+    staleTime: connected ? 120_000 : 12_000,
+    gcTime: 1000 * 60 * 60 * 12,
+    ...(initialMeta
+      ? { initialData: initialMeta.data, initialDataUpdatedAt: initialMeta.updatedAt }
+      : {}),
   });
 
   const send = useMutation({
     mutationFn: () => sendSessionMessage({ sessionId, body, clientMessageId: crypto.randomUUID() }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       setBody("");
-      void query.refetch();
+      if (res.message) {
+        queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => {
+          if (!prev?.viewerId) return prev;
+          if (prev.messages.some((m) => m.id === res.message!.id)) return prev;
+          return {
+            ...prev,
+            messages: [...prev.messages, { ...res.message!, isMine: true }],
+          };
+        });
+      } else {
+        void query.refetch();
+      }
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -131,7 +206,13 @@ export function SessionRoomClient({ sessionId }: { sessionId: string }) {
         <div className="flex items-center gap-2 border-b border-border/40 px-4 py-2 text-xs text-muted-foreground">
           <Clock className="h-3.5 w-3.5" />
           <span className="font-mono tabular-nums">{formatElapsed(elapsed)}</span>
-          {typing ? <span className="ml-auto animate-pulse text-primary">Someone is typing…</span> : <span className="ml-auto opacity-60">Realtime chat</span>}
+          {typing ? (
+            <span className="ml-auto animate-pulse text-primary">Someone is typing…</span>
+          ) : connected ? (
+            <span className="ml-auto text-emerald-400/90">Live chat</span>
+          ) : (
+            <span className="ml-auto opacity-60">Syncing…</span>
+          )}
         </div>
         <ScrollArea className="min-h-[280px] flex-1 px-3">
           <div className="space-y-2 py-3">
@@ -142,7 +223,10 @@ export function SessionRoomClient({ sessionId }: { sessionId: string }) {
                   layout
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={cn("max-w-[90%] rounded-2xl border px-3 py-2 text-sm", m.isMine ? "ml-auto border-primary/30 bg-primary/10" : "border-border/60 bg-muted/30")}
+                  className={cn(
+                    "max-w-[90%] rounded-2xl border px-3 py-2 text-sm",
+                    m.isMine ? "ml-auto border-primary/30 bg-primary/10" : "border-border/60 bg-muted/30",
+                  )}
                 >
                   <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{m.senderName}</p>
                   <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>

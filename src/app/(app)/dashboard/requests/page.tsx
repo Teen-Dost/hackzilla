@@ -1,5 +1,9 @@
 import { Suspense } from "react";
-import { RequestsFeedClient } from "@/features/help-requests/components/requests-feed-client";
+import { getRequestsFeed } from "@/features/help-requests/actions";
+import {
+  RequestsFeedClient,
+  type RequestsFeedInitialPage,
+} from "@/features/help-requests/components/requests-feed-client";
 
 function FeedFallback() {
   return (
@@ -15,10 +19,18 @@ function FeedFallback() {
   );
 }
 
-export default function RequestsPage() {
+export default async function RequestsPage() {
+  let initialFeedPage: RequestsFeedInitialPage | undefined;
+  try {
+    const page = await getRequestsFeed({ cursor: null, subject: undefined, q: undefined });
+    initialFeedPage = { items: page.items as RequestsFeedInitialPage["items"], nextCursor: page.nextCursor };
+  } catch {
+    initialFeedPage = undefined;
+  }
+
   return (
     <Suspense fallback={<FeedFallback />}>
-      <RequestsFeedClient />
+      <RequestsFeedClient initialFeedPage={initialFeedPage} />
     </Suspense>
   );
 }

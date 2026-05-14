@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { AlertCircle, Filter, Loader2, Plus, Radio } from "lucide-react";
+import { AlertCircle, Filter, Loader2, Plus, Radio, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getRequestsFeed } from "@/features/help-requests/actions";
@@ -16,13 +16,19 @@ import { isLearnloopDemo } from "@/lib/demo/demo-flags";
 import { DemoFeedOfflineStrip } from "@/features/demo/demo-fallback-ui";
 import { ListPageSkeleton } from "@/components/feedback/list-page-skeleton";
 import { EmptyState } from "@/components/feedback/empty-state";
+import { cn } from "@/lib/utils";
 
-export function RequestsFeedClient() {
+const REQUESTS_PAGE_UI_KEY = "learnloop-requests-page-ui";
+
+export type RequestsFeedInitialPage = { items: FeedItem[]; nextCursor: string | null };
+
+export function RequestsFeedClient({ initialFeedPage }: { initialFeedPage?: RequestsFeedInitialPage }) {
   const searchParams = useSearchParams();
   const compose = searchParams.get("compose") === "1";
   const [open, setOpen] = React.useState(false);
   const [subject, setSubject] = React.useState<string | undefined>();
   const [q, setQ] = React.useState("");
+  const [debouncedQ, setDebouncedQ] = React.useState("");
   const [typing, setTyping] = React.useState(false);
   const { subscribe } = useRealtime();
 
@@ -30,15 +36,58 @@ export function RequestsFeedClient() {
     if (compose) setOpen(true);
   }, [compose]);
 
+  React.useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(REQUESTS_PAGE_UI_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { subject?: string; q?: string };
+      if (saved.subject !== undefined) setSubject(saved.subject ? saved.subject : undefined);
+      if (typeof saved.q === "string") setQ(saved.q);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  React.useEffect(() => {
+    try {
+      sessionStorage.setItem(REQUESTS_PAGE_UI_KEY, JSON.stringify({ subject: subject ?? "", q }));
+    } catch {
+      /* ignore */
+    }
+  }, [subject, q]);
+
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 320);
+    return () => window.clearTimeout(t);
+  }, [q]);
+
+  const ssrInfinite = React.useMemo(() => {
+    if (!initialFeedPage) return null;
+    return {
+      pages: [initialFeedPage],
+      pageParams: [undefined as string | undefined],
+      updatedAt: Date.now(),
+    };
+  }, [initialFeedPage]);
+
   const pageVisible = usePageVisible();
   const pollMs = useAdaptiveRefetchInterval(isLearnloopDemo() ? false : 10_000);
+  const matchesSsrFilters = subject === undefined && debouncedQ === "";
   const query = useInfiniteQuery({
-    queryKey: ["requests-feed", subject, q],
-    queryFn: async ({ pageParam }: { pageParam: string | undefined }) => getRequestsFeed({ cursor: pageParam ?? null, subject, q: q || undefined }),
+    queryKey: ["requests-feed", subject, debouncedQ],
+    queryFn: async ({ pageParam }: { pageParam: string | undefined }) =>
+      getRequestsFeed({ cursor: pageParam ?? null, subject, q: debouncedQ || undefined }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     refetchInterval: pageVisible ? pollMs : false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
     retry: isLearnloopDemo() ? 2 : 1,
+    staleTime: 45_000,
+    gcTime: 1000 * 60 * 60 * 12,
+    ...(ssrInfinite && matchesSsrFilters
+      ? { initialData: { pages: ssrInfinite.pages, pageParams: ssrInfinite.pageParams }, initialDataUpdatedAt: ssrInfinite.updatedAt }
+      : {}),
   });
 
   React.useEffect(() => {
@@ -51,6 +100,7 @@ export function RequestsFeedClient() {
   const showDemoOffline = query.isError && isLearnloopDemo();
   const showGenericError = query.isError && !isLearnloopDemo();
   const showInitialSkeleton = query.isPending && items.length === 0;
+  const feedRefetching = query.isFetching && !query.isFetchingNextPage;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -83,10 +133,23 @@ export function RequestsFeedClient() {
               : "Live sync across tabs; cross-device presence ships on the socket layer next."}
           </p>
         </div>
-        <Button variant="glow" className="gap-2 touch-manipulation" onClick={() => setOpen(true)}>
-          <Plus className="h-4 w-4" />
-          New doubt
-        </Button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="gap-2 touch-manipulation"
+            disabled={showGenericError}
+            aria-label="Refresh doubts list"
+            onClick={() => void query.refetch()}
+          >
+            <RefreshCw className={cn("h-4 w-4", feedRefetching && "animate-spin")} aria-hidden />
+            Refresh
+          </Button>
+          <Button variant="glow" className="gap-2 touch-manipulation" onClick={() => setOpen(true)}>
+            <Plus className="h-4 w-4" />
+            New doubt
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row">

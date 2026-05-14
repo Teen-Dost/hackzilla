@@ -74,7 +74,6 @@ export function SessionWhiteboard({
 
   React.useEffect(() => {
     if (!socket?.connected) return;
-    socket.emit(ClientToServerEvents.SESSION_SUBSCRIBE, { sessionId });
     const onRemoteStroke = (p: WhiteboardStrokePayload) => {
       if (p.sessionId !== sessionId) return;
       setStrokes((prev) => [...prev, p.stroke]);
@@ -87,7 +86,6 @@ export function SessionWhiteboard({
     socket.on(ServerToClientEvents.WB_STROKE, onRemoteStroke);
     socket.on(ServerToClientEvents.WB_CLEAR, onRemoteClear);
     return () => {
-      socket.emit(ClientToServerEvents.SESSION_UNSUBSCRIBE, { sessionId });
       socket.off(ServerToClientEvents.WB_STROKE, onRemoteStroke);
       socket.off(ServerToClientEvents.WB_CLEAR, onRemoteClear);
     };

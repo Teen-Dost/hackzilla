@@ -85,3 +85,17 @@ export type WhiteboardStrokePayload = {
   sessionId: string;
   stroke: { id: string; color: string; width: number; points: { x: number; y: number }[] };
 };
+
+/** Pushed to `session:{sessionId}` after Prisma insert — clients merge without refetch. */
+export type SessionLiveChatMessagePayload = {
+  id: string;
+  body: string;
+  createdAt: string;
+  senderId: string;
+  senderName: string;
+};
+
+export type MessageNewEventPayload = {
+  sessionId: string;
+  message: SessionLiveChatMessagePayload;
+};
