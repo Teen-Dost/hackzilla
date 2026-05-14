@@ -4,14 +4,14 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
-import { Clock, MessageSquare, PanelTop, Send, Sparkles, Square, Play, AlertCircle } from "lucide-react";
+import { Clock, MessageSquare, PanelTop, Send, Sparkles, Square, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { endSession, getSessionBundle, sendSessionMessage, startSession } from "@/features/help-requests/actions";
+import { endSession, getSessionBundle, sendSessionMessage } from "@/features/help-requests/actions";
 import { SessionMediaRail } from "@/features/sessions/components/session-media-rail";
 import { SessionWhiteboard } from "@/features/sessions/components/session-whiteboard";
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
@@ -22,9 +22,33 @@ import { AIShimmer } from "@/features/ai/components/ai-shimmer";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/feedback/empty-state";
 import { ClientToServerEvents, ServerToClientEvents } from "@/server/socket/events";
-import type { MessageNewEventPayload } from "@/server/socket/events";
+import type { MessageNewEventPayload, SessionLiveChatMessagePayload } from "@/server/socket/events";
 
 type SessionBundle = NonNullable<Awaited<ReturnType<typeof getSessionBundle>>>;
+
+type SessionMessage = SessionBundle["messages"][number] & {
+  pending?: boolean;
+  clientMessageId?: string;
+};
+
+function mergeIncomingMessage(prev: SessionBundle | undefined, incoming: SessionLiveChatMessagePayload | SessionMessage) {
+  if (!prev?.viewerId) return prev;
+  if (prev.messages.some((m) => m.id === incoming.id)) return prev;
+
+  const isMine = incoming.senderId === prev.viewerId;
+  const normalized = { ...incoming, isMine };
+  const optimisticIndex = prev.messages.findIndex(
+    (m) => (m as SessionMessage).pending && (m as SessionMessage).senderId === incoming.senderId && m.body === incoming.body,
+  );
+
+  if (optimisticIndex >= 0) {
+    const nextMessages = [...prev.messages];
+    nextMessages[optimisticIndex] = normalized;
+    return { ...prev, messages: nextMessages };
+  }
+
+  return { ...prev, messages: [...prev.messages, normalized] };
+}
 
 export function SessionRoomClient({
   sessionId,
@@ -40,11 +64,48 @@ export function SessionRoomClient({
   const [typing, setTyping] = React.useState(false);
   const tRef = React.useRef<number | null>(null);
 
+  const initialMeta = React.useMemo(() => {
+    if (initialBundle === undefined) return null;
+    if (initialBundle === null) return null;
+    return { data: initialBundle, updatedAt: Date.now() };
+  }, [initialBundle]);
+
+  const pageVisible = usePageVisible();
+  const pollMsFallback = 4_000;
+  const query = useQuery({
+    queryKey: ["session", sessionId],
+    queryFn: () => getSessionBundle(sessionId),
+    refetchInterval: (q) => {
+      if (!pageVisible) return false;
+      const d = q.state.data;
+      const live = d?.status === "SCHEDULED" || d?.status === "ACTIVE";
+      if (!live) return false;
+      return connected ? false : pollMsFallback;
+    },
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    retry: 1,
+    staleTime: connected ? 5 * 60_000 : 15_000,
+    gcTime: 1000 * 60 * 60 * 12,
+    ...(initialMeta
+      ? { initialData: initialMeta.data, initialDataUpdatedAt: initialMeta.updatedAt }
+      : {}),
+  });
+
+  const sessionLive = query.data?.status === "SCHEDULED" || query.data?.status === "ACTIVE";
+
   React.useLayoutEffect(() => {
     if (!socket) return;
     const join = () => {
       socket.emit(ClientToServerEvents.SESSION_SUBSCRIBE, { sessionId });
     };
+    if (!sessionLive) {
+      if (socket.connected) {
+        socket.emit(ClientToServerEvents.SESSION_UNSUBSCRIBE, { sessionId });
+      }
+      return;
+    }
     if (socket.connected) join();
     socket.on("connect", join);
     return () => {
@@ -53,65 +114,57 @@ export function SessionRoomClient({
         socket.emit(ClientToServerEvents.SESSION_UNSUBSCRIBE, { sessionId });
       }
     };
-  }, [socket, sessionId]);
+  }, [socket, sessionId, sessionLive]);
 
   React.useEffect(() => {
-    if (!socket) return;
+    if (!socket || !sessionLive) return;
     const onNew = (payload: MessageNewEventPayload) => {
       if (payload.sessionId !== sessionId) return;
-      queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => {
-        if (!prev?.viewerId) return prev;
-        if (prev.messages.some((m) => m.id === payload.message.id)) return prev;
-        return {
-          ...prev,
-          messages: [
-            ...prev.messages,
-            {
-              ...payload.message,
-              isMine: payload.message.senderId === prev.viewerId,
-            },
-          ],
-        };
-      });
+      queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => mergeIncomingMessage(prev, payload.message));
     };
     socket.on(ServerToClientEvents.MESSAGE_NEW, onNew);
     return () => {
       socket.off(ServerToClientEvents.MESSAGE_NEW, onNew);
     };
-  }, [socket, sessionId, queryClient]);
-
-  const initialMeta = React.useMemo(() => {
-    if (initialBundle === undefined) return null;
-    if (initialBundle === null) return null;
-    return { data: initialBundle, updatedAt: Date.now() };
-  }, [initialBundle]);
-
-  const pageVisible = usePageVisible();
-  const pollMs = connected ? false : 4_000;
-  const query = useQuery({
-    queryKey: ["session", sessionId],
-    queryFn: () => getSessionBundle(sessionId),
-    refetchInterval: pageVisible ? pollMs : false,
-    retry: 1,
-    staleTime: connected ? 120_000 : 12_000,
-    gcTime: 1000 * 60 * 60 * 12,
-    ...(initialMeta
-      ? { initialData: initialMeta.data, initialDataUpdatedAt: initialMeta.updatedAt }
-      : {}),
-  });
+  }, [socket, sessionId, queryClient, sessionLive]);
 
   const send = useMutation({
-    mutationFn: () => sendSessionMessage({ sessionId, body, clientMessageId: crypto.randomUUID() }),
-    onSuccess: (res) => {
+    mutationFn: ({ body: messageBody, clientMessageId }: { body: string; clientMessageId: string }) =>
+      sendSessionMessage({ sessionId, body: messageBody, clientMessageId }),
+    onMutate: async ({ body: messageBody, clientMessageId }) => {
+      const prevBundle = queryClient.getQueryData<SessionBundle>(["session", sessionId]);
+      const live = prevBundle?.status === "SCHEDULED" || prevBundle?.status === "ACTIVE";
+      if (!live) return { clientMessageId };
+      const optimisticBody = messageBody.trim();
+      if (!optimisticBody) return { clientMessageId };
+      queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => {
+        if (!prev?.viewerId) return prev;
+        const optimisticMessage = {
+          id: clientMessageId,
+          clientMessageId,
+          body: optimisticBody,
+          createdAt: new Date().toISOString(),
+          senderId: prev.viewerId,
+          senderName: "You",
+          isMine: true,
+          pending: true,
+        } as SessionMessage;
+        if (prev.messages.some((m) => m.id === clientMessageId)) return prev;
+        return { ...prev, messages: [...prev.messages, optimisticMessage] };
+      });
+      return { clientMessageId };
+    },
+    onSuccess: (res, _vars, ctx) => {
       setBody("");
       if (res.message) {
         queryClient.setQueryData<SessionBundle>(["session", sessionId], (prev) => {
           if (!prev?.viewerId) return prev;
-          if (prev.messages.some((m) => m.id === res.message!.id)) return prev;
-          return {
-            ...prev,
-            messages: [...prev.messages, { ...res.message!, isMine: true }],
-          };
+          const finalMessage = { ...res.message!, isMine: true } as SessionMessage;
+          const nextMessages = prev.messages
+            .map((m) => ((ctx?.clientMessageId && (m as SessionMessage).clientMessageId === ctx.clientMessageId) ? finalMessage : m))
+            .filter((m, index, all) => all.findIndex((candidate) => candidate.id === m.id) === index);
+          if (nextMessages.some((m) => m.id === finalMessage.id)) return { ...prev, messages: nextMessages };
+          return { ...prev, messages: [...nextMessages, finalMessage] };
         });
       } else {
         void query.refetch();
@@ -120,14 +173,7 @@ export function SessionRoomClient({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const start = useMutation({
-    mutationFn: () => startSession(sessionId),
-    onSuccess: () => {
-      toast.success("Session live");
-      void query.refetch();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
+  
 
   const end = useMutation({
     mutationFn: () => endSession(sessionId),
@@ -140,6 +186,12 @@ export function SessionRoomClient({
 
   const data = query.data;
   const elapsed = useElapsed(data?.startedAt, data?.status === "ACTIVE");
+  const submitMessage = React.useCallback(() => {
+    if (!sessionLive) return;
+    const messageBody = body.trim();
+    if (!messageBody || send.isPending) return;
+    void send.mutateAsync({ body: messageBody, clientMessageId: crypto.randomUUID() });
+  }, [body, send, sessionLive]);
 
   if (query.isLoading) {
     return (
@@ -190,8 +242,8 @@ export function SessionRoomClient({
   }
 
   return (
-    <div className="mx-auto flex min-w-0 max-w-6xl flex-col gap-4 lg:flex-row lg:items-start lg:gap-6">
-      <div className="flex min-h-[min(70dvh,520px)] min-w-0 flex-1 flex-col rounded-2xl border border-border/70 bg-card/60 shadow-card backdrop-blur-sm lg:max-w-md">
+    <div className="mx-auto flex min-h-0 min-w-0 max-w-6xl flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-6">
+      <div className="flex min-h-0 min-w-0 max-h-[85dvh] flex-1 flex-col rounded-2xl border border-border/70 bg-card/60 shadow-card backdrop-blur-sm lg:max-h-[calc(100dvh-7rem)] lg:max-w-md">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-primary">Session</p>
@@ -202,11 +254,13 @@ export function SessionRoomClient({
             <Badge variant={data.status === "ACTIVE" ? "glow" : "secondary"}>{data.status}</Badge>
           </div>
         </div>
-        <SessionMediaRail className="mx-3 mt-2" />
+        <SessionMediaRail className="mx-3 mt-2" sessionOpen={sessionLive} />
         <div className="flex items-center gap-2 border-b border-border/40 px-4 py-2 text-xs text-muted-foreground">
           <Clock className="h-3.5 w-3.5" />
           <span className="font-mono tabular-nums">{formatElapsed(elapsed)}</span>
-          {typing ? (
+          {!sessionLive ? (
+            <span className="ml-auto text-muted-foreground">Session ended</span>
+          ) : typing ? (
             <span className="ml-auto animate-pulse text-primary">Someone is typing…</span>
           ) : connected ? (
             <span className="ml-auto text-emerald-400/90">Live chat</span>
@@ -214,7 +268,7 @@ export function SessionRoomClient({
             <span className="ml-auto opacity-60">Syncing…</span>
           )}
         </div>
-        <ScrollArea className="min-h-[280px] flex-1 px-3">
+        <ScrollArea className="min-h-0 min-w-0 flex-1 basis-0 px-3">
           <div className="space-y-2 py-3">
             <AnimatePresence initial={false}>
               {data.messages.map((m) => (
@@ -248,20 +302,21 @@ export function SessionRoomClient({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (body.trim()) void send.mutateAsync();
+                  submitMessage();
                 }
               }}
-              placeholder="Message…"
+              placeholder={sessionLive ? "Message…" : "Chat closed for this session"}
               className="bg-background/50"
+              disabled={!sessionLive}
             />
-            <Button size="icon" variant="glow" disabled={!body.trim() || send.isPending} onClick={() => void send.mutateAsync()}>
+            <Button size="icon" variant="glow" disabled={!sessionLive || !body.trim() || send.isPending} onClick={submitMessage}>
               <Send className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-[1.2] flex-col gap-4">
+      <div className="flex min-h-0 min-w-0 flex-[1.2] flex-col gap-4">
         <div className="grid gap-4 md:grid-cols-2">
           <Card className="border-border/70 bg-card/70 backdrop-blur-sm">
             <CardHeader className="pb-2">
@@ -306,20 +361,13 @@ export function SessionRoomClient({
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            {data.status === "SCHEDULED" ? (
-              <Button variant="glow" onClick={() => void start.mutateAsync()}>
-                <Play className="mr-2 h-4 w-4" />
-                Go live
-              </Button>
-            ) : null}
-            {data.status === "ACTIVE" ? (
-              <Button variant="destructive" onClick={() => void end.mutateAsync()}>
-                <Square className="mr-2 h-4 w-4" />
-                End session
-              </Button>
-            ) : null}
-            <Button variant="outline" asChild>
-              <Link href="/dashboard/sessions">All sessions</Link>
+            <Button
+              variant="destructive"
+              onClick={() => void end.mutateAsync()}
+              disabled={end.isPending || data.status === "ENDED"}
+            >
+              <Square className="mr-2 h-4 w-4" />
+              Close session
             </Button>
           </CardContent>
         </Card>
