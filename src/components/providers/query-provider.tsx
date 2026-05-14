@@ -9,7 +9,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 import type { Query } from "@tanstack/query-core";
 
-const PERSIST_STORAGE_KEY = "learnloop-dashboard-queries";
+const PERSIST_STORAGE_KEY = "learnloop-dashboard-queries-v2";
 
 /** Only persist these list views — keeps storage small and avoids serializing the whole app cache. */
 const PERSISTED_QUERY_ROOTS = new Set(["requests-feed", "my-sessions"]);

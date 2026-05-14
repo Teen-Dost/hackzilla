@@ -16,6 +16,7 @@ import { getLeaderboardDemoPeriodKey } from "@/lib/demo/leaderboard-period";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
 import { getAppUserIdOrThrow, getAppUserOrThrow } from "@/lib/auth/app-user";
 import { publishQueryInvalidate } from "@/lib/realtime/publish-invalidate";
+import { publishSessionChatMessage } from "@/lib/realtime/publish-session-chat";
 import { createHelpRequestSchema } from "@/features/help-requests/schema";
 import { mockCategorize } from "@/features/help-requests/ai-mock";
 
@@ -173,10 +174,47 @@ export async function getRequestDetail(id: string) {
   const userId = await getAppUserIdOrThrow();
   const row = await prisma.helpRequest.findUnique({
     where: { id },
-    include: {
-      author: { include: { profile: true } },
-      aiTags: true,
-      interests: { include: { tutor: { include: { profile: true, tutorProfile: true } } } },
+    select: {
+      id: true,
+      title: true,
+      body: true,
+      subjectSlug: true,
+      topicSlug: true,
+      urgency: true,
+      preferredDurationMinutes: true,
+      language: true,
+      status: true,
+      createdAt: true,
+      authorId: true,
+      author: {
+        select: {
+          id: true,
+          profile: { select: { displayName: true, avatarUrl: true } },
+        },
+      },
+      aiTags: { select: { tag: true, confidence: true } },
+      interests: {
+        select: {
+          tutorUserId: true,
+          createdAt: true,
+          tutor: {
+            select: {
+              profile: {
+                select: { displayName: true, avatarUrl: true, languages: true },
+              },
+              tutorProfile: {
+                select: {
+                  headline: true,
+                  averageRating: true,
+                  totalRatingsCount: true,
+                  teachingSubjectSlugs: true,
+                  verificationStatus: true,
+                },
+              },
+            },
+          },
+        },
+      },
       _count: { select: { interests: true } },
     },
   });
@@ -225,8 +263,11 @@ export async function getRequestDetail(id: string) {
 
 export async function expressInterest(requestId: string) {
   const user = await getAppUserOrThrow();
-  const req = await prisma.helpRequest.findUnique({ where: { id: requestId }, include: { author: true } });
-  if (!req || req.status !== HelpRequestStatus.OPEN) throw new Error("Request not available");
+  const req = await prisma.helpRequest.findFirst({
+    where: { id: requestId, status: HelpRequestStatus.OPEN },
+    select: { id: true, title: true, authorId: true },
+  });
+  if (!req) throw new Error("Request not available");
   if (req.authorId === user.id) throw new Error("Cannot express interest on own request");
 
   await prisma.$transaction(async (tx) => {
@@ -289,7 +330,10 @@ export async function simulateBotInterest(requestId: string) {
   const bot = await prisma.user.findUnique({ where: { clerkUserId: DEMO_BOT_CLERK_ID } });
   if (!bot) throw new Error("Run `npx prisma db seed` to create the demo bot tutor.");
 
-  const req = await prisma.helpRequest.findUnique({ where: { id: requestId } });
+  const req = await prisma.helpRequest.findFirst({
+    where: { id: requestId },
+    select: { authorId: true, status: true },
+  });
   if (!req || req.authorId !== user.id) throw new Error("Only the author can run demo interest");
   if (req.status !== HelpRequestStatus.OPEN) throw new Error("Request not open");
 
@@ -313,7 +357,10 @@ export async function matchTutor(raw: unknown) {
   const user = await getAppUserOrThrow();
   const { requestId, tutorUserId } = matchSchema.parse(raw);
 
-  const req = await prisma.helpRequest.findUnique({ where: { id: requestId } });
+  const req = await prisma.helpRequest.findFirst({
+    where: { id: requestId },
+    select: { id: true, authorId: true, title: true, status: true },
+  });
   if (!req || req.authorId !== user.id) throw new Error("Only the author can match");
   if (req.status !== HelpRequestStatus.OPEN) throw new Error("Request is not open");
 
@@ -464,14 +511,28 @@ export async function sendSessionMessage(raw: unknown) {
   });
   if (!session) throw new Error("Session not found");
 
-  await prisma.message.create({
-    data: {
-      sessionId: input.sessionId,
-      senderId: userId,
-      body: input.body,
-      clientMessageId: input.clientMessageId,
-    },
-  });
+  const [created, profile] = await Promise.all([
+    prisma.message.create({
+      data: {
+        sessionId: input.sessionId,
+        senderId: userId,
+        body: input.body,
+        clientMessageId: input.clientMessageId,
+      },
+      select: { id: true, body: true, createdAt: true, senderId: true },
+    }),
+    prisma.profile.findUnique({ where: { userId }, select: { displayName: true } }),
+  ]);
+
+  const message = {
+    id: created.id,
+    body: created.body,
+    createdAt: created.createdAt.toISOString(),
+    senderId: created.senderId,
+    senderName: profile?.displayName ?? "User",
+  };
+
+  void publishSessionChatMessage({ sessionId: input.sessionId, message });
 
   revalidatePath(`/dashboard/sessions/${input.sessionId}`);
   await publishQueryInvalidate({
@@ -482,7 +543,7 @@ export async function sendSessionMessage(raw: unknown) {
       },
     ],
   });
-  return { ok: true as const };
+  return { ok: true as const, message };
 }
 
 export async function getSessionBundle(sessionId: string) {
@@ -492,21 +553,48 @@ export async function getSessionBundle(sessionId: string) {
       id: sessionId,
       OR: [{ studentId: userId }, { tutorId: userId }],
     },
-    include: {
+    select: {
+      id: true,
+      status: true,
+      startedAt: true,
+      endedAt: true,
       helpRequest: { select: { title: true } },
-      student: { include: { profile: true, presence: true } },
-      tutor: { include: { profile: true, presence: true } },
+      student: {
+        select: {
+          id: true,
+          profile: { select: { displayName: true, avatarUrl: true } },
+          presence: { select: { status: true } },
+        },
+      },
+      tutor: {
+        select: {
+          id: true,
+          profile: { select: { displayName: true, avatarUrl: true } },
+          presence: { select: { status: true } },
+        },
+      },
       messages: {
         orderBy: { createdAt: "asc" },
-        take: 200,
-        include: { sender: { include: { profile: true } } },
+        take: 120,
+        select: {
+          id: true,
+          body: true,
+          createdAt: true,
+          senderId: true,
+          sender: { select: { profile: { select: { displayName: true } } } },
+        },
       },
-      summaries: { orderBy: { createdAt: "desc" }, take: 1 },
+      summaries: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { content: true, status: true },
+      },
     },
   });
   if (!session) return null;
 
   return {
+    viewerId: userId,
     id: session.id,
     status: session.status,
     startedAt: session.startedAt?.toISOString() ?? null,

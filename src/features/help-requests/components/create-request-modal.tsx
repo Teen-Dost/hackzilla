@@ -32,6 +32,7 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
   const qc = useQueryClient();
   const { emit } = useRealtime();
   const celebrate = useCelebration();
+  const minBodyLength = 12;
   const [step, setStep] = React.useState(0);
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
@@ -104,19 +105,30 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
 
         <div className="space-y-5 px-6 py-5">
           <div className="flex gap-2">
-            {["Compose", "Details", "Publish"].map((label, i) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setStep(i)}
-                className={cn(
-                  "flex-1 rounded-lg border px-2 py-1.5 text-center text-xs font-medium transition-colors",
-                  step === i ? "border-primary/50 bg-primary/10 text-foreground" : "border-border/60 text-muted-foreground hover:bg-muted/40",
-                )}
-              >
-                {i + 1}. {label}
-              </button>
-            ))}
+            {["Compose", "Details", "Publish"].map((label, i) => {
+              const canGoTo = (() => {
+                if (i === 0) return true;
+                if (i === 1) return title.trim().length >= 4 && body.trim().length >= 12;
+                if (i === 2) return title.trim().length >= 4 && body.trim().length >= 12;
+                return false;
+              })();
+
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => canGoTo && setStep(i)}
+                  disabled={!canGoTo}
+                  className={cn(
+                    "flex-1 rounded-lg border px-2 py-1.5 text-center text-xs font-medium transition-colors",
+                    step === i ? "border-primary/50 bg-primary/10 text-foreground" : "border-border/60 text-muted-foreground",
+                    !canGoTo && "opacity-60 cursor-not-allowed",
+                  )}
+                >
+                  {i + 1}. {label}
+                </button>
+              );
+            })}
           </div>
 
           <AnimatePresence mode="wait">
@@ -132,6 +144,12 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
                   className="w-full resize-none rounded-md border border-input bg-background/50 px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   placeholder="Context, what you tried, where you’re blocked…"
                 />
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Minimum {minBodyLength} characters</span>
+                  <span className={cn(body.trim().length < minBodyLength ? "text-amber-400" : "text-emerald-400")}>
+                    {body.trim().length}/{minBodyLength}
+                  </span>
+                </div>
               </motion.div>
             ) : null}
             {step === 1 ? (
@@ -226,7 +244,7 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
             </Button>
             <div className="flex gap-2">
               {step < 2 ? (
-                <Button type="button" onClick={() => setStep((s) => Math.min(2, s + 1))} disabled={step === 0 && (!title.trim() || body.trim().length < 12)}>
+                <Button type="button" onClick={() => setStep((s) => Math.min(2, s + 1))} disabled={step === 0 && (!title.trim() || body.trim().length < minBodyLength)}>
                   Continue
                 </Button>
               ) : (
@@ -235,6 +253,14 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
                   variant="glow"
                   disabled={mutation.isPending}
                   onClick={() => {
+                    if (title.trim().length < 4) {
+                      toast.error("Title must be at least 4 characters");
+                      return;
+                    }
+                    if (body.trim().length < minBodyLength) {
+                      toast.error(`Describe the doubt with at least ${minBodyLength} characters`);
+                      return;
+                    }
                     void mutation.mutateAsync();
                   }}
                 >
