@@ -31,6 +31,14 @@ export function formatSessionRecapMarkdown(payload: SessionRecapPayload): string
 
 type MessageLine = { speaker: string; body: string };
 
+/** Reduces false blocks on academic / tutoring transcripts (AI Studio). */
+const safetySettings = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" },
+] as const;
+
 /**
  * Calls Gemini when `GEMINI_API_KEY` is set; otherwise returns `null` so callers can fall back.
  */
@@ -49,25 +57,30 @@ export async function generateSessionRecapWithGemini(input: {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  /** Prefer env override; fall back to widely available models (responseSchema is omitted — it often 400s on AI Studio). */
-  const modelsToTry = [env.GEMINI_MODEL, "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-1.5-flash", "gemini-1.5-flash-latest"].filter(
-    (m, i, a): m is string => Boolean(m) && a.indexOf(m) === i,
-  );
+  const modelsToTry = [
+    env.GEMINI_MODEL,
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-flash-latest",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+  ].filter((m, i, a): m is string => Boolean(m) && a.indexOf(m) === i);
+
   const transcript =
     input.messages.length === 0
       ? "(No chat messages — whiteboard-only or very short session.)"
       : input.messages.map((m) => `${m.speaker}: ${m.body}`).join("\n");
 
-  const prompt = `You are an expert learning scientist and tutor coach. Analyze this peer tutoring session and return ONLY valid JSON (no markdown code fences) matching this shape:
+  const jsonShape = `Return a single JSON object (no markdown fences) with this exact shape:
 {
-  "summaryMarkdown": "string in markdown: 2-4 short paragraphs on what happened and what the learner likely gained",
-  "keyPoints": ["3-6 strings: concrete concepts or skills touched"],
-  "misconceptionsAddressed": ["0-3 strings, or empty array"],
-  "recommendedNextSteps": ["2-4 actionable items for the student"],
-  "tutorStrengthsObserved": ["1-3 specific strengths you infer from how the tutor explained or scaffolded — cite behaviors, not flattery"]
-}
+  "summaryMarkdown": "markdown string, 2-4 short paragraphs",
+  "keyPoints": ["3-6 short strings"],
+  "misconceptionsAddressed": ["0-3 strings or empty array"],
+  "recommendedNextSteps": ["2-4 strings"],
+  "tutorStrengthsObserved": ["1-3 strings"]
+}`;
 
-Session title: ${input.requestTitle}
+  const sessionBlock = `Session title: ${input.requestTitle}
 Subject slug: ${input.subjectSlug ?? "general"}
 Request context (may be truncated):
 ${(input.requestBody ?? "").slice(0, 2000)}
@@ -75,74 +88,117 @@ ${(input.requestBody ?? "").slice(0, 2000)}
 Chat transcript (chronological):
 ${transcript.slice(0, 24_000)}`;
 
-  const requestBody = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.35,
-      maxOutputTokens: 4096,
-      responseMimeType: "application/json",
-    },
-  };
+  const promptJsonMode = `You are an expert learning scientist and tutor coach. Analyze this peer tutoring session.
+${jsonShape}
+
+${sessionBlock}`;
+
+  const promptTextMode = `You are an expert learning scientist and tutor coach. Analyze this peer tutoring session.
+${jsonShape}
+Rules: Output ONLY the JSON object. No prose before or after. No markdown code fences.
+
+${sessionBlock}`;
 
   for (const model of modelsToTry) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      logger.warn("gemini.session_recap.http_error", {
-        model,
-        status: res.status,
-        errText: errText.slice(0, 600),
+    const modes: Array<{ name: "json_mime" | "text_plain"; generationConfig: Record<string, unknown> }> = [
+      {
+        name: "json_mime",
+        generationConfig: {
+          temperature: 0.35,
+          maxOutputTokens: 8192,
+          responseMimeType: "application/json",
+        },
+      },
+      {
+        name: "text_plain",
+        generationConfig: {
+          temperature: 0.35,
+          maxOutputTokens: 8192,
+        },
+      },
+    ];
+
+    for (const mode of modes) {
+      const body = {
+        contents: [{ role: "user", parts: [{ text: mode.name === "text_plain" ? promptTextMode : promptJsonMode }] }],
+        safetySettings,
+        generationConfig: mode.generationConfig,
+      };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
-      continue;
-    }
 
-    const raw: unknown = await res.json();
-    const blocked = logIfBlocked(raw, model);
-    if (blocked) continue;
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        logger.warn("gemini.session_recap.http_error", {
+          model,
+          mode: mode.name,
+          status: res.status,
+          errText: errText.slice(0, 800),
+        });
+        continue;
+      }
 
-    const text = extractGeminiText(raw);
-    if (!text) {
-      logger.warn("gemini.session_recap.empty_text", { model });
-      continue;
-    }
+      const raw: unknown = await res.json();
+      if (raw && typeof raw === "object" && "error" in raw) {
+        logger.warn("gemini.session_recap.api_error", {
+          model,
+          mode: mode.name,
+          error: (raw as { error?: unknown }).error,
+        });
+        continue;
+      }
 
-    const json = parseJsonLenient(text);
-    if (!json) {
-      logger.warn("gemini.session_recap.json_parse", { model, text: text.slice(0, 400) });
-      continue;
-    }
+      const blocked = logIfBlocked(raw, model, mode.name);
+      if (blocked) continue;
 
-    const parsed = recapSchema.safeParse(json);
-    if (!parsed.success) {
-      logger.warn("gemini.session_recap.schema", { model, issues: parsed.error.flatten() });
-      continue;
+      const text = extractGeminiText(raw);
+      if (!text?.trim()) {
+        logger.warn("gemini.session_recap.empty_text", { model, mode: mode.name, rawKeys: raw && typeof raw === "object" ? Object.keys(raw) : [] });
+        continue;
+      }
+
+      const json = parseJsonLenient(text);
+      if (!json) {
+        logger.warn("gemini.session_recap.json_parse", { model, mode: mode.name, text: text.slice(0, 500) });
+        continue;
+      }
+
+      const normalized = normalizeRecapPayload(json);
+      if (normalized) {
+        return normalized;
+      }
+
+      const parsed = recapSchema.safeParse(json);
+      if (parsed.success) {
+        return parsed.data;
+      }
+      logger.warn("gemini.session_recap.schema", { model, mode: mode.name, issues: parsed.error.flatten() });
     }
-    return parsed.data;
   }
 
   return null;
 }
 
-function logIfBlocked(body: unknown, model: string): boolean {
+function logIfBlocked(body: unknown, model: string, mode: string): boolean {
   if (!body || typeof body !== "object") return false;
   const b = body as {
     promptFeedback?: { blockReason?: string };
-    candidates?: Array<{ finishReason?: string; safetyRatings?: unknown }>;
+    candidates?: Array<{ finishReason?: string }>;
   };
   const pr = b.promptFeedback?.blockReason;
   if (pr) {
-    logger.warn("gemini.session_recap.blocked_prompt", { model, blockReason: pr });
+    logger.warn("gemini.session_recap.blocked_prompt", { model, mode, blockReason: pr });
     return true;
   }
   const c0 = b.candidates?.[0];
   if (c0?.finishReason && c0.finishReason !== "STOP" && c0.finishReason !== "MAX_TOKENS") {
-    logger.warn("gemini.session_recap.finish_reason", { model, finishReason: c0.finishReason });
+    logger.warn("gemini.session_recap.finish_reason", { model, mode, finishReason: c0.finishReason });
     return c0.finishReason === "SAFETY" || c0.finishReason === "BLOCKLIST" || c0.finishReason === "PROHIBITED_CONTENT";
   }
   return false;
@@ -160,7 +216,7 @@ function parseJsonLenient(text: string): unknown | null {
     try {
       return JSON.parse(fence[1].trim());
     } catch {
-      return null;
+      /* fall through */
     }
   }
   const start = trimmed.indexOf("{");
@@ -175,13 +231,53 @@ function parseJsonLenient(text: string): unknown | null {
   return null;
 }
 
+function coerceStringArray(v: unknown): string[] {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof v === "string") {
+    const t = v.trim();
+    return t ? [t] : [];
+  }
+  return [];
+}
+
+/** Accepts common alternate keys / shapes models return. */
+function normalizeRecapPayload(json: unknown): SessionRecapPayload | null {
+  if (!json || typeof json !== "object") return null;
+  const o = json as Record<string, unknown>;
+  const mdRaw = o.summaryMarkdown ?? o.summary ?? o.session_summary ?? o.recap ?? o.overview;
+  const summaryMarkdown = typeof mdRaw === "string" ? mdRaw.trim() : "";
+  if (!summaryMarkdown) return null;
+
+  let keyPoints = coerceStringArray(o.keyPoints ?? o.key_points ?? o.takeaways ?? o.highlights);
+  if (keyPoints.length === 0) {
+    keyPoints = ["Review the chat above for specifics."];
+  }
+
+  return {
+    summaryMarkdown,
+    keyPoints: keyPoints.slice(0, 8),
+    misconceptionsAddressed: coerceStringArray(o.misconceptionsAddressed ?? o.misconceptions ?? o.misconceptionAddressed).slice(0, 5),
+    recommendedNextSteps: coerceStringArray(o.recommendedNextSteps ?? o.nextSteps ?? o.followUp).slice(0, 6),
+    tutorStrengthsObserved: coerceStringArray(o.tutorStrengthsObserved ?? o.tutorStrengths ?? o.tutor_highlights).slice(0, 4),
+  };
+}
+
 function extractGeminiText(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
   const candidates = (body as { candidates?: unknown }).candidates;
   if (!Array.isArray(candidates) || !candidates[0]) return null;
   const c0 = candidates[0] as { content?: { parts?: unknown } };
   const parts = c0.content?.parts;
-  if (!Array.isArray(parts) || !parts[0]) return null;
-  const t = (parts[0] as { text?: unknown }).text;
-  return typeof t === "string" ? t : null;
+  if (!Array.isArray(parts) || parts.length === 0) return null;
+
+  const chunks: string[] = [];
+  for (const p of parts) {
+    if (p && typeof p === "object" && "text" in p) {
+      const t = (p as { text?: unknown }).text;
+      if (typeof t === "string" && t.length) chunks.push(t);
+    }
+  }
+  if (chunks.length === 0) return null;
+  return chunks.join("");
 }
