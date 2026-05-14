@@ -5,9 +5,9 @@ import { logger } from "@/lib/logger";
 const recapSchema = z.object({
   summaryMarkdown: z.string().min(1),
   keyPoints: z.array(z.string()).min(1).max(8),
-  misconceptionsAddressed: z.array(z.string()).max(5).optional().default([]),
-  recommendedNextSteps: z.array(z.string()).max(6).optional().default([]),
-  tutorStrengthsObserved: z.array(z.string()).max(4).optional().default([]),
+  misconceptionsAddressed: z.array(z.string()).max(5).nullish().transform((v) => v ?? []),
+  recommendedNextSteps: z.array(z.string()).max(6).nullish().transform((v) => v ?? []),
+  tutorStrengthsObserved: z.array(z.string()).max(4).nullish().transform((v) => v ?? []),
 });
 
 export type SessionRecapPayload = z.infer<typeof recapSchema>;
@@ -49,7 +49,10 @@ export async function generateSessionRecapWithGemini(input: {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const model = env.GEMINI_MODEL ?? "gemini-2.0-flash";
+  /** Prefer env override; fall back to widely available models (responseSchema is omitted — it often 400s on AI Studio). */
+  const modelsToTry = [env.GEMINI_MODEL, "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-1.5-flash", "gemini-1.5-flash-latest"].filter(
+    (m, i, a): m is string => Boolean(m) && a.indexOf(m) === i,
+  );
   const transcript =
     input.messages.length === 0
       ? "(No chat messages — whiteboard-only or very short session.)"
@@ -72,59 +75,104 @@ ${(input.requestBody ?? "").slice(0, 2000)}
 Chat transcript (chronological):
 ${transcript.slice(0, 24_000)}`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const requestBody = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.35,
+      maxOutputTokens: 4096,
+      responseMimeType: "application/json",
+    },
+  };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.35,
-        maxOutputTokens: 2048,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "object",
-          properties: {
-            summaryMarkdown: { type: "string" },
-            keyPoints: { type: "array", items: { type: "string" } },
-            misconceptionsAddressed: { type: "array", items: { type: "string" } },
-            recommendedNextSteps: { type: "array", items: { type: "string" } },
-            tutorStrengthsObserved: { type: "array", items: { type: "string" } },
-          },
-          required: ["summaryMarkdown", "keyPoints"],
-        },
-      },
-    }),
-  });
+  for (const model of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    logger.error("gemini.session_recap.http_error", { status: res.status, errText: errText.slice(0, 500) });
-    return null;
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      logger.warn("gemini.session_recap.http_error", {
+        model,
+        status: res.status,
+        errText: errText.slice(0, 600),
+      });
+      continue;
+    }
+
+    const raw: unknown = await res.json();
+    const blocked = logIfBlocked(raw, model);
+    if (blocked) continue;
+
+    const text = extractGeminiText(raw);
+    if (!text) {
+      logger.warn("gemini.session_recap.empty_text", { model });
+      continue;
+    }
+
+    const json = parseJsonLenient(text);
+    if (!json) {
+      logger.warn("gemini.session_recap.json_parse", { model, text: text.slice(0, 400) });
+      continue;
+    }
+
+    const parsed = recapSchema.safeParse(json);
+    if (!parsed.success) {
+      logger.warn("gemini.session_recap.schema", { model, issues: parsed.error.flatten() });
+      continue;
+    }
+    return parsed.data;
   }
 
-  const raw: unknown = await res.json();
-  const text = extractGeminiText(raw);
-  if (!text) {
-    logger.error("gemini.session_recap.empty_text", {});
-    return null;
-  }
+  return null;
+}
 
-  let json: unknown;
+function logIfBlocked(body: unknown, model: string): boolean {
+  if (!body || typeof body !== "object") return false;
+  const b = body as {
+    promptFeedback?: { blockReason?: string };
+    candidates?: Array<{ finishReason?: string; safetyRatings?: unknown }>;
+  };
+  const pr = b.promptFeedback?.blockReason;
+  if (pr) {
+    logger.warn("gemini.session_recap.blocked_prompt", { model, blockReason: pr });
+    return true;
+  }
+  const c0 = b.candidates?.[0];
+  if (c0?.finishReason && c0.finishReason !== "STOP" && c0.finishReason !== "MAX_TOKENS") {
+    logger.warn("gemini.session_recap.finish_reason", { model, finishReason: c0.finishReason });
+    return c0.finishReason === "SAFETY" || c0.finishReason === "BLOCKLIST" || c0.finishReason === "PROHIBITED_CONTENT";
+  }
+  return false;
+}
+
+function parseJsonLenient(text: string): unknown | null {
+  const trimmed = text.trim();
   try {
-    json = JSON.parse(text);
+    return JSON.parse(trimmed);
   } catch {
-    logger.error("gemini.session_recap.json_parse", { text: text.slice(0, 400) });
-    return null;
+    /* fall through */
   }
-
-  const parsed = recapSchema.safeParse(json);
-  if (!parsed.success) {
-    logger.error("gemini.session_recap.schema", { issues: parsed.error.flatten() });
-    return null;
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) {
+    try {
+      return JSON.parse(fence[1].trim());
+    } catch {
+      return null;
+    }
   }
-  return parsed.data;
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function extractGeminiText(body: unknown): string | null {

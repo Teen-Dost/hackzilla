@@ -14,6 +14,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { logger } from "@/lib/logger";
+import { getServerEnv } from "@/lib/env/server";
 import {
   formatSessionRecapMarkdown,
   generateSessionRecapWithGemini,
@@ -727,6 +728,13 @@ export async function endSession(sessionId: string) {
     messages: messageLines,
   });
 
+  let hasGeminiKey = false;
+  try {
+    hasGeminiKey = Boolean(getServerEnv().GEMINI_API_KEY);
+  } catch {
+    hasGeminiKey = false;
+  }
+
   let modelLabel: string;
   let content: string;
   let keyPoints: string[];
@@ -737,18 +745,36 @@ export async function endSession(sessionId: string) {
     keyPoints = recapPayload.keyPoints;
   } else {
     modelLabel = "learnloop-fallback-v1";
-    content = [
-      "## Session recap",
-      "",
-      "We could not reach the live AI recap service (add a **GEMINI_API_KEY** in your environment for Gemini-powered insights).",
-      "",
-      "### Offline placeholder",
-      "",
-      "- Core topics from the chat were not auto-summarized in this run.",
-      "- Ask your tutor for a one-line takeaway, or re-open the thread from **All sessions**.",
-    ].join("\n");
-    keyPoints = ["Recap unavailable — configure Gemini for structured insights", "Session marked complete in the ledger"];
-    logger.info("session.end.fallback_recap", { sessionId });
+    if (hasGeminiKey) {
+      content = [
+        "## Session recap",
+        "",
+        "**GEMINI_API_KEY** is set, but the live recap did not succeed (model blocked the request, invalid JSON, or an API error).",
+        "",
+        "### What to try",
+        "",
+        "- Restart `next dev` after editing `.env`, then end a session again.",
+        "- In the terminal, search logs for **`gemini.session_recap`** to see the HTTP status or parse error.",
+        "- Optionally set **`GEMINI_MODEL=gemini-1.5-flash`** if your key cannot access newer models.",
+      ].join("\n");
+      keyPoints = [
+        "Gemini configured — inspect server logs: gemini.session_recap",
+        "Retry after restart or try GEMINI_MODEL=gemini-1.5-flash",
+      ];
+    } else {
+      content = [
+        "## Session recap",
+        "",
+        "We could not reach the live AI recap service (add a **GEMINI_API_KEY** in your environment for Gemini-powered insights).",
+        "",
+        "### Offline placeholder",
+        "",
+        "- Core topics from the chat were not auto-summarized in this run.",
+        "- Ask your tutor for a one-line takeaway, or re-open the thread from **All sessions**.",
+      ].join("\n");
+      keyPoints = ["Recap unavailable — set GEMINI_API_KEY", "Session marked complete in the ledger"];
+    }
+    logger.info("session.end.fallback_recap", { sessionId, hasGeminiKey });
   }
 
   await prisma.sessionSummary.create({
