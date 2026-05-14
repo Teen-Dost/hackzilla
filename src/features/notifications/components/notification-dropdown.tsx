@@ -13,11 +13,12 @@ import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-ref
 
 export function NotificationDropdown() {
   const qc = useQueryClient();
-  const pollMs = useAdaptiveRefetchInterval(5000);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const pollMs = useAdaptiveRefetchInterval(45_000);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["notifications"],
     queryFn: () => listNotifications(),
-    refetchInterval: pollMs,
+    refetchInterval: menuOpen ? pollMs : false,
     retry: 1,
   });
 
@@ -34,7 +35,12 @@ export function NotificationDropdown() {
   });
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        setMenuOpen(open);
+        if (open) void refetch();
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" className="relative touch-manipulation" aria-label="Notifications" aria-busy={isLoading}>
           <Bell className="h-5 w-5" aria-hidden />

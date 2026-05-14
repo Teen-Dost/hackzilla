@@ -478,7 +478,7 @@ export async function getSessionBundle(sessionId: string) {
       OR: [{ studentId: user.id }, { tutorId: user.id }],
     },
     include: {
-      helpRequest: true,
+      helpRequest: { select: { title: true } },
       student: { include: { profile: true, presence: true } },
       tutor: { include: { profile: true, presence: true } },
       messages: {

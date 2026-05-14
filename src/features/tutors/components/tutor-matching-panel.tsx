@@ -13,6 +13,7 @@ import { TutorCard } from "@/features/tutors/components/tutor-card";
 import { demoTutors, getMatchReason } from "@/features/tutors/demo-tutors";
 import { expressInterest, getRequestDetail, matchTutor, simulateBotInterest, withdrawInterest } from "@/features/help-requests/actions";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { MagneticButton } from "@/components/micro/magnetic-button";
 import { mockCategorize } from "@/features/help-requests/ai-mock";
 import { AISkillRadar } from "@/features/ai/components/ai-skill-radar";
@@ -38,11 +39,12 @@ export function TutorMatchingPanel({ requestId, subjectSlug }: { requestId: stri
     return () => window.clearTimeout(t);
   }, [requestId]);
 
-  const pollMs = useAdaptiveRefetchInterval(4000);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(12_000);
   const { data, refetch } = useQuery({
     queryKey: ["request-detail", requestId],
     queryFn: () => getRequestDetail(requestId),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
   });
 
   const interestMutation = useMutation({

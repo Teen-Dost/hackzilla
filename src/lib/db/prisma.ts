@@ -6,10 +6,13 @@ const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefi
  * Singleton Prisma client — WHY: Avoid exhausting connections in Next dev HMR.
  * In production with serverless, prefer Prisma Accelerate / Data Proxy + pooler.
  */
+const devQueryLog =
+  process.env.NODE_ENV === "development" && process.env.PRISMA_QUERY_LOG === "1";
+
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
+    log: devQueryLog ? ["query", "error", "warn"] : process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 
 if (process.env.NODE_ENV !== "production") {

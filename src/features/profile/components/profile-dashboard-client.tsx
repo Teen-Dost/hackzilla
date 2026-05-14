@@ -11,15 +11,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getProfileDashboard } from "@/features/help-requests/actions";
 import { InstitutionVerificationCard } from "@/features/trust/components/institution-verification-card";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { AIMatchScoreBar } from "@/features/ai/components/ai-match-score-bar";
 import { EmptyState } from "@/components/feedback/empty-state";
 
 export function ProfileDashboardClient() {
-  const pollMs = useAdaptiveRefetchInterval(15000);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(30_000);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["profile-dashboard"],
     queryFn: () => getProfileDashboard(),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
   });
 
   if (isLoading && !data) {

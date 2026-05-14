@@ -16,6 +16,7 @@ import { SessionMediaRail } from "@/features/sessions/components/session-media-r
 import { SessionWhiteboard } from "@/features/sessions/components/session-whiteboard";
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { AIStreamingText } from "@/features/ai/components/ai-streaming-text";
 import { AIShimmer } from "@/features/ai/components/ai-shimmer";
 import { cn } from "@/lib/utils";
@@ -26,11 +27,12 @@ export function SessionRoomClient({ sessionId }: { sessionId: string }) {
   const [typing, setTyping] = React.useState(false);
   const tRef = React.useRef<number | null>(null);
 
-  const pollMs = useAdaptiveRefetchInterval(2500);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(12_000);
   const query = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => getSessionBundle(sessionId),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
     retry: 1,
   });
 

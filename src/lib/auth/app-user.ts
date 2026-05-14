@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/db/prisma";
 import { upsertUserFromClerkSync } from "@/lib/auth/sync-clerk-user";
@@ -17,7 +18,7 @@ const appUserInclude = {
 } as const;
 
 /** Resolves Clerk session → internal `User` row (webhook or JIT on first request). */
-export async function getAppUser() {
+export const getAppUser = cache(async () => {
   const { userId: clerkUserId } = await auth();
   if (!clerkUserId) return null;
 
@@ -44,7 +45,7 @@ export async function getAppUser() {
 
   user = await load();
   return user;
-}
+});
 
 export async function getAppUserOrThrow() {
   const user = await getAppUser();

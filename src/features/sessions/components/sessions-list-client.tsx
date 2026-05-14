@@ -10,16 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getMySessions } from "@/features/help-requests/actions";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { EmptyState } from "@/components/feedback/empty-state";
 import { ListPageSkeleton } from "@/components/feedback/list-page-skeleton";
 import { springSnappy } from "@/animations/variants";
 
 export function SessionsListClient() {
-  const pollMs = useAdaptiveRefetchInterval(5000);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(25_000);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["my-sessions"],
     queryFn: () => getMySessions(),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
   });
 
   if (isLoading && !data) {

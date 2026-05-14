@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { getRequestsFeed } from "@/features/help-requests/actions";
 import { useRealtime } from "@/features/realtime/realtime-provider";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { CreateRequestModal } from "@/features/help-requests/components/create-request-modal";
 import { RequestCard, type FeedItem } from "@/features/help-requests/components/request-card";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
@@ -29,13 +30,14 @@ export function RequestsFeedClient() {
     if (compose) setOpen(true);
   }, [compose]);
 
-  const pollMs = useAdaptiveRefetchInterval(isLearnloopDemo() ? 2600 : 3500);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(isLearnloopDemo() ? false : 10_000);
   const query = useInfiniteQuery({
     queryKey: ["requests-feed", subject, q],
     queryFn: async ({ pageParam }: { pageParam: string | undefined }) => getRequestsFeed({ cursor: pageParam ?? null, subject, q: q || undefined }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
     retry: isLearnloopDemo() ? 2 : 1,
   });
 
@@ -77,7 +79,7 @@ export function RequestsFeedClient() {
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {isLearnloopDemo()
-              ? "Preview build: faster sync so the feed always feels occupied."
+              ? "Preview build: light server polling; demo heartbeat keeps the feed fresh without hammering the API."
               : "Live sync across tabs; cross-device presence ships on the socket layer next."}
           </p>
         </div>

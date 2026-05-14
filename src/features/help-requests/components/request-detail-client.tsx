@@ -10,17 +10,19 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { getRequestDetail } from "@/features/help-requests/actions";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
 import { TutorMatchingPanel } from "@/features/tutors/components/tutor-matching-panel";
 import { ListPageSkeleton } from "@/components/feedback/list-page-skeleton";
 import { EmptyState } from "@/components/feedback/empty-state";
 
 export function RequestDetailClient({ id }: { id: string }) {
-  const pollMs = useAdaptiveRefetchInterval(4000);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(12_000);
   const { data, isLoading, isError, refetch, isFetching, isSuccess } = useQuery({
     queryKey: ["request-detail", id],
     queryFn: () => getRequestDetail(id),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
   });
 
   if (isLoading) {

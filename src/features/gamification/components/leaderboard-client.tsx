@@ -8,16 +8,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getLeaderboardRows } from "@/features/help-requests/actions";
 import { useAdaptiveRefetchInterval } from "@/features/realtime/use-adaptive-refetch-interval";
+import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { AnimatedCounter } from "@/components/micro/animated-counter";
 import { EmptyState } from "@/components/feedback/empty-state";
 import { springSnappy } from "@/animations/variants";
 
 export function LeaderboardClient() {
-  const pollMs = useAdaptiveRefetchInterval(8000);
+  const pageVisible = usePageVisible();
+  const pollMs = useAdaptiveRefetchInterval(20_000);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["leaderboard"],
     queryFn: () => getLeaderboardRows(),
-    refetchInterval: pollMs,
+    refetchInterval: pageVisible ? pollMs : false,
   });
 
   if (isLoading && !data) {
