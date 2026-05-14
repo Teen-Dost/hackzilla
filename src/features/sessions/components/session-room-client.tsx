@@ -27,12 +27,30 @@ import type { MessageNewEventPayload } from "@/server/socket/events";
 
 type SessionBundle = NonNullable<Awaited<ReturnType<typeof getSessionBundle>>>;
 
-export function SessionRoomClient({
+export function SessionRoomClient(props: {
+  sessionId: string;
+  initialBundle?: Awaited<ReturnType<typeof getSessionBundle>>;
+}) {
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+  if (!mounted) {
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 px-1 sm:px-0">
+        <AIShimmer className="h-36 w-full rounded-2xl sm:h-40" />
+        <AIShimmer className="h-72 w-full rounded-2xl sm:h-64" />
+      </div>
+    );
+  }
+  return <SessionRoomInner {...props} />;
+}
+
+function SessionRoomInner({
   sessionId,
   initialBundle,
 }: {
   sessionId: string;
-  /** From RSC when load succeeds; `null` means not found (client still refetches once). */
   initialBundle?: Awaited<ReturnType<typeof getSessionBundle>>;
 }) {
   const queryClient = useQueryClient();

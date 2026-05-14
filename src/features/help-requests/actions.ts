@@ -753,13 +753,13 @@ export async function endSession(sessionId: string) {
         "",
         "### What to try",
         "",
-        "- Restart `next dev` after editing `.env`, then end a session again.",
-        "- In the terminal, search logs for **`gemini.session_recap`** to see the HTTP status or parse error.",
-        "- Optionally set **`GEMINI_MODEL=gemini-1.5-flash`** if your key cannot access newer models.",
+        "- **HTTP 429 / quota:** Free tier resets over time, or enable **billing** for your Google Cloud / AI Studio project. Try **`GEMINI_MODEL=gemini-2.0-flash-lite`** (often a separate quota pool).",
+        "- **HTTP 404:** That model id is not enabled for your key — set **`GEMINI_MODEL`** to a model shown in [AI Studio](https://aistudio.google.com/) for your account.",
+        "- In the terminal, search logs for **`gemini.session_recap`** (includes `apiVersion`, `status`, and `mode`).",
       ].join("\n");
       keyPoints = [
-        "Gemini configured — inspect server logs: gemini.session_recap",
-        "Retry after restart or try GEMINI_MODEL=gemini-1.5-flash",
+        "Gemini: check logs gemini.session_recap — 429 = quota/billing; 404 = wrong model id",
+        "Try GEMINI_MODEL=gemini-2.0-flash-lite or enable billing on the API project",
       ];
     } else {
       content = [

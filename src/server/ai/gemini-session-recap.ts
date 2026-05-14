@@ -39,6 +39,62 @@ const safetySettings = [
   { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" },
 ] as const;
 
+/** `v1` first — some model aliases resolve here while `v1beta` returns 404. */
+const API_VERSIONS = ["v1", "v1beta"] as const;
+
+const DEFAULT_MODELS = [
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-001",
+  "gemini-1.5-flash-8b",
+  "gemini-1.5-flash-8b-latest",
+] as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Parses `Please retry in 58.03s` from Gemini 429 bodies. */
+function parseRetryAfterMs(errText: string): number | null {
+  const m = errText.match(/retry in ([\d.]+)\s*s/i);
+  if (!m) return null;
+  const sec = Number(m[1]);
+  if (!Number.isFinite(sec) || sec < 0) return null;
+  return Math.min(65_000, Math.ceil(sec * 1000) + 400);
+}
+
+type FetchOutcome =
+  | { ok: true; raw: unknown }
+  | { ok: false; status: number; errText: string };
+
+async function postGenerateContent(url: string, body: object): Promise<FetchOutcome> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const errText = await res.text();
+  if (!res.ok) {
+    return { ok: false, status: res.status, errText };
+  }
+  try {
+    return { ok: true, raw: JSON.parse(errText) };
+  } catch {
+    return { ok: false, status: res.status, errText: errText.slice(0, 200) };
+  }
+}
+
+async function postWith429Retry(url: string, body: object, model: string, mode: string): Promise<FetchOutcome> {
+  let out = await postGenerateContent(url, body);
+  if (!out.ok && out.status === 429) {
+    const wait = parseRetryAfterMs(out.errText) ?? 3500;
+    logger.warn("gemini.session_recap.rate_limit_wait", { model, mode, waitMs: wait });
+    await sleep(wait);
+    out = await postGenerateContent(url, body);
+  }
+  return out;
+}
+
 /**
  * Calls Gemini when `GEMINI_API_KEY` is set; otherwise returns `null` so callers can fall back.
  */
@@ -57,14 +113,7 @@ export async function generateSessionRecapWithGemini(input: {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const modelsToTry = [
-    env.GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-001",
-  ].filter((m, i, a): m is string => Boolean(m) && a.indexOf(m) === i);
+  const modelsToTry = [env.GEMINI_MODEL, ...DEFAULT_MODELS].filter((m, i, a): m is string => Boolean(m) && a.indexOf(m) === i);
 
   const transcript =
     input.messages.length === 0
@@ -99,93 +148,94 @@ Rules: Output ONLY the JSON object. No prose before or after. No markdown code f
 
 ${sessionBlock}`;
 
-  for (const model of modelsToTry) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-    const modes: Array<{ name: "json_mime" | "text_plain"; generationConfig: Record<string, unknown> }> = [
-      {
-        name: "json_mime",
-        generationConfig: {
-          temperature: 0.35,
-          maxOutputTokens: 8192,
-          responseMimeType: "application/json",
-        },
+  const modes: Array<{ name: "json_mime" | "text_plain"; generationConfig: Record<string, unknown>; prompt: string }> = [
+    {
+      name: "json_mime",
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 8192,
+        responseMimeType: "application/json",
       },
-      {
-        name: "text_plain",
-        generationConfig: {
-          temperature: 0.35,
-          maxOutputTokens: 8192,
-        },
+      prompt: promptJsonMode,
+    },
+    {
+      name: "text_plain",
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 8192,
       },
-    ];
+      prompt: promptTextMode,
+    },
+  ];
 
-    for (const mode of modes) {
-      const body = {
-        contents: [{ role: "user", parts: [{ text: mode.name === "text_plain" ? promptTextMode : promptJsonMode }] }],
-        safetySettings,
-        generationConfig: mode.generationConfig,
-      };
+  for (const apiVersion of API_VERSIONS) {
+    for (const model of modelsToTry) {
+      for (const mode of modes) {
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const body = {
+          contents: [{ role: "user", parts: [{ text: mode.prompt }] }],
+          safetySettings,
+          generationConfig: mode.generationConfig,
+        };
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        const out = await postWith429Retry(url, body, model, mode.name);
+        if (!out.ok) {
+          logger.warn("gemini.session_recap.http_error", {
+            apiVersion,
+            model,
+            mode: mode.name,
+            status: out.status,
+            errText: out.errText.slice(0, 800),
+          });
+          if (out.status === 404) {
+            break;
+          }
+          continue;
+        }
 
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        logger.warn("gemini.session_recap.http_error", {
-          model,
-          mode: mode.name,
-          status: res.status,
-          errText: errText.slice(0, 800),
-        });
-        continue;
+        if (out.raw && typeof out.raw === "object" && "error" in out.raw) {
+          logger.warn("gemini.session_recap.api_error", { apiVersion, model, mode: mode.name, error: (out.raw as { error?: unknown }).error });
+          continue;
+        }
+
+        const blocked = logIfBlocked(out.raw, apiVersion, model, mode.name);
+        if (blocked) continue;
+
+        const text = extractGeminiText(out.raw);
+        if (!text?.trim()) {
+          logger.warn("gemini.session_recap.empty_text", {
+            apiVersion,
+            model,
+            mode: mode.name,
+            rawKeys: out.raw && typeof out.raw === "object" ? Object.keys(out.raw) : [],
+          });
+          continue;
+        }
+
+        const json = parseJsonLenient(text);
+        if (!json) {
+          logger.warn("gemini.session_recap.json_parse", { apiVersion, model, mode: mode.name, text: text.slice(0, 500) });
+          continue;
+        }
+
+        const normalized = normalizeRecapPayload(json);
+        if (normalized) {
+          return normalized;
+        }
+
+        const parsed = recapSchema.safeParse(json);
+        if (parsed.success) {
+          return parsed.data;
+        }
+        logger.warn("gemini.session_recap.schema", { apiVersion, model, mode: mode.name, issues: parsed.error.flatten() });
       }
-
-      const raw: unknown = await res.json();
-      if (raw && typeof raw === "object" && "error" in raw) {
-        logger.warn("gemini.session_recap.api_error", {
-          model,
-          mode: mode.name,
-          error: (raw as { error?: unknown }).error,
-        });
-        continue;
-      }
-
-      const blocked = logIfBlocked(raw, model, mode.name);
-      if (blocked) continue;
-
-      const text = extractGeminiText(raw);
-      if (!text?.trim()) {
-        logger.warn("gemini.session_recap.empty_text", { model, mode: mode.name, rawKeys: raw && typeof raw === "object" ? Object.keys(raw) : [] });
-        continue;
-      }
-
-      const json = parseJsonLenient(text);
-      if (!json) {
-        logger.warn("gemini.session_recap.json_parse", { model, mode: mode.name, text: text.slice(0, 500) });
-        continue;
-      }
-
-      const normalized = normalizeRecapPayload(json);
-      if (normalized) {
-        return normalized;
-      }
-
-      const parsed = recapSchema.safeParse(json);
-      if (parsed.success) {
-        return parsed.data;
-      }
-      logger.warn("gemini.session_recap.schema", { model, mode: mode.name, issues: parsed.error.flatten() });
     }
   }
 
   return null;
 }
 
-function logIfBlocked(body: unknown, model: string, mode: string): boolean {
+function logIfBlocked(body: unknown, apiVersion: string, model: string, mode: string): boolean {
   if (!body || typeof body !== "object") return false;
   const b = body as {
     promptFeedback?: { blockReason?: string };
@@ -193,12 +243,12 @@ function logIfBlocked(body: unknown, model: string, mode: string): boolean {
   };
   const pr = b.promptFeedback?.blockReason;
   if (pr) {
-    logger.warn("gemini.session_recap.blocked_prompt", { model, mode, blockReason: pr });
+    logger.warn("gemini.session_recap.blocked_prompt", { apiVersion, model, mode, blockReason: pr });
     return true;
   }
   const c0 = b.candidates?.[0];
   if (c0?.finishReason && c0.finishReason !== "STOP" && c0.finishReason !== "MAX_TOKENS") {
-    logger.warn("gemini.session_recap.finish_reason", { model, mode, finishReason: c0.finishReason });
+    logger.warn("gemini.session_recap.finish_reason", { apiVersion, model, mode, finishReason: c0.finishReason });
     return c0.finishReason === "SAFETY" || c0.finishReason === "BLOCKLIST" || c0.finishReason === "PROHIBITED_CONTENT";
   }
   return false;
