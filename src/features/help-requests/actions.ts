@@ -9,16 +9,9 @@ import {
   NotificationChannel,
   NotificationStatus,
   SessionStatus,
-  SessionSummaryStatus,
   TransactionType,
 } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { logger } from "@/lib/logger";
-import { getServerEnv } from "@/lib/env/server";
-import {
-  formatSessionRecapMarkdown,
-  generateSessionRecapWithGemini,
-} from "@/server/ai/gemini-session-recap";
 import { tutorPayoutMicrocreditsForRating } from "@/features/sessions/session-economics";
 import { getLeaderboardDemoPeriodKey } from "@/lib/demo/leaderboard-period";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
@@ -592,11 +585,6 @@ export async function getSessionBundle(sessionId: string) {
           sender: { select: { profile: { select: { displayName: true } } } },
         },
       },
-      summaries: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: { content: true, status: true },
-      },
       ratings: {
         select: { fromUserId: true, stars: true, comment: true, createdAt: true },
         take: 8,
@@ -638,9 +626,6 @@ export async function getSessionBundle(sessionId: string) {
       senderName: m.sender.profile?.displayName ?? "User",
       isMine: m.senderId === userId,
     })),
-    aiSummary: session.summaries[0]
-      ? { content: session.summaries[0].content, status: session.summaries[0].status }
-      : null,
     sessionRating: studentRating
       ? {
           stars: studentRating.stars,
@@ -681,16 +666,12 @@ export async function endSession(sessionId: string) {
   const userId = await getAppUserIdOrThrow();
   const s = await prisma.session.findFirst({
     where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }] },
-    include: {
-      helpRequest: { select: { title: true, body: true, subjectSlug: true } },
-      messages: {
-        orderBy: { createdAt: "asc" },
-        take: 200,
-        select: {
-          body: true,
-          sender: { select: { profile: { select: { displayName: true } } } },
-        },
-      },
+    select: {
+      id: true,
+      status: true,
+      helpRequestId: true,
+      studentId: true,
+      tutorId: true,
     },
   });
   if (!s) throw new Error("Not found");
@@ -715,78 +696,6 @@ export async function endSession(sessionId: string) {
       data: { completedSessionCount: { increment: 1 } },
     }),
   ]);
-
-  const messageLines = s.messages.map((m) => ({
-    speaker: m.sender.profile?.displayName ?? "Participant",
-    body: m.body,
-  }));
-
-  let recapPayload = await generateSessionRecapWithGemini({
-    requestTitle: s.helpRequest.title,
-    requestBody: s.helpRequest.body,
-    subjectSlug: s.helpRequest.subjectSlug,
-    messages: messageLines,
-  });
-
-  let hasGeminiKey = false;
-  try {
-    hasGeminiKey = Boolean(getServerEnv().GEMINI_API_KEY);
-  } catch {
-    hasGeminiKey = false;
-  }
-
-  let modelLabel: string;
-  let content: string;
-  let keyPoints: string[];
-
-  if (recapPayload) {
-    modelLabel = "google-gemini";
-    content = formatSessionRecapMarkdown(recapPayload);
-    keyPoints = recapPayload.keyPoints;
-  } else {
-    modelLabel = "learnloop-fallback-v1";
-    if (hasGeminiKey) {
-      content = [
-        "## Session recap",
-        "",
-        "**GEMINI_API_KEY** is set, but the live recap did not succeed (model blocked the request, invalid JSON, or an API error).",
-        "",
-        "### What to try",
-        "",
-        "- **HTTP 429 / quota:** Free tier resets over time, or enable **billing** for your Google Cloud / AI Studio project. Try **`GEMINI_MODEL=gemini-2.0-flash-lite`** (often a separate quota pool).",
-        "- **HTTP 404:** That model id is not enabled for your key — set **`GEMINI_MODEL`** to a model shown in [AI Studio](https://aistudio.google.com/) for your account.",
-        "- In the terminal, search logs for **`gemini.session_recap`** (includes `apiVersion`, `status`, and `mode`).",
-      ].join("\n");
-      keyPoints = [
-        "Gemini: check logs gemini.session_recap — 429 = quota/billing; 404 = wrong model id",
-        "Try GEMINI_MODEL=gemini-2.0-flash-lite or enable billing on the API project",
-      ];
-    } else {
-      content = [
-        "## Session recap",
-        "",
-        "We could not reach the live AI recap service (add a **GEMINI_API_KEY** in your environment for Gemini-powered insights).",
-        "",
-        "### Offline placeholder",
-        "",
-        "- Core topics from the chat were not auto-summarized in this run.",
-        "- Ask your tutor for a one-line takeaway, or re-open the thread from **All sessions**.",
-      ].join("\n");
-      keyPoints = ["Recap unavailable — set GEMINI_API_KEY", "Session marked complete in the ledger"];
-    }
-    logger.info("session.end.fallback_recap", { sessionId, hasGeminiKey });
-  }
-
-  await prisma.sessionSummary.create({
-    data: {
-      sessionId,
-      status: SessionSummaryStatus.COMPLETED,
-      content,
-      keyPoints,
-      model: modelLabel,
-      promptVersion: "session-recap-v2",
-    },
-  });
 
   revalidatePath(`/dashboard/sessions/${sessionId}`);
   await publishQueryInvalidate({

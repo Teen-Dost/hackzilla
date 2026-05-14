@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
-import { Clock, MessageSquare, PanelTop, Send, Sparkles, Square, Play, AlertCircle } from "lucide-react";
+import { Clock, MessageSquare, PanelTop, Send, Square, Play, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +18,6 @@ import { SessionRatingPanel } from "@/features/sessions/components/session-ratin
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
 import { useSocketIo } from "@/features/realtime/socket-io-provider";
 import { usePageVisible } from "@/features/realtime/use-page-visible";
-import { AIStreamingText } from "@/features/ai/components/ai-streaming-text";
 import { AIShimmer } from "@/features/ai/components/ai-shimmer";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/feedback/empty-state";
@@ -151,7 +150,7 @@ function SessionRoomInner({
   const end = useMutation({
     mutationFn: () => endSession(sessionId),
     onSuccess: () => {
-      toast.success("Session ended — recap and next steps are ready below.");
+      toast.success("Session ended.");
       void query.refetch();
     },
     onError: (e: Error) => toast.error(e.message),
@@ -299,20 +298,13 @@ function SessionRoomInner({
           <Card className="border-border/70 bg-card/70 backdrop-blur-sm">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-base">
-                <Sparkles className="h-4 w-4 text-primary" />
-                AI co-pilot
+                <MessageSquare className="h-4 w-4 text-primary" />
+                Session tips
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-muted-foreground">
-              <p>Suggested prompts: “Summarize last 5 messages”, “What misconception might exist?”</p>
-              {data.aiSummary ? (
-                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Session recap</p>
-                  <AIStreamingText text={data.aiSummary.content} speedMs={12} />
-                </div>
-              ) : (
-                <p className="text-xs">Recap unlocks when the session ends.</p>
-              )}
+              <p>Use the chat for quick explanations and the whiteboard for sketches, step-by-step work, or diagrams.</p>
+              <p className="text-xs">When you wrap up, the learner can rate the session so your tutor payout is recorded.</p>
               {data.status === "ENDED" && data.tutorSessionPayoutMicrocredits ? (
                 <p className="rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-xs text-foreground/90">
                   {data.viewerId === data.tutor.id ? (
