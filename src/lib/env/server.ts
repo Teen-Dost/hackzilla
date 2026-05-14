@@ -13,6 +13,11 @@ const serverSchema = z.object({
 
   OPENAI_API_KEY: z.string().min(1).optional(),
 
+  /** Google AI Studio key — session recap + post-session insights when set. */
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  /** Optional override, e.g. `gemini-2.0-flash` or `gemini-1.5-flash`. */
+  GEMINI_MODEL: z.string().min(1).optional(),
+
   SOCKET_SERVER_URL: z.string().min(1).optional(),
   SOCKET_JWT_SECRET: z.string().min(16).optional(),
   /** Next → socket dev server (e.g. http://127.0.0.1:3001) for `publishQueryInvalidate`. */

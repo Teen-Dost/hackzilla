@@ -10,8 +10,15 @@ import {
   NotificationStatus,
   SessionStatus,
   SessionSummaryStatus,
+  TransactionType,
 } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { logger } from "@/lib/logger";
+import {
+  formatSessionRecapMarkdown,
+  generateSessionRecapWithGemini,
+} from "@/server/ai/gemini-session-recap";
+import { tutorPayoutMicrocreditsForRating } from "@/features/sessions/session-economics";
 import { getLeaderboardDemoPeriodKey } from "@/lib/demo/leaderboard-period";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
 import { getAppUserIdOrThrow, getAppUserOrThrow } from "@/lib/auth/app-user";
@@ -589,9 +596,19 @@ export async function getSessionBundle(sessionId: string) {
         take: 1,
         select: { content: true, status: true },
       },
+      ratings: {
+        select: { fromUserId: true, stars: true, comment: true, createdAt: true },
+        take: 8,
+      },
     },
   });
   if (!session) return null;
+
+  const studentRating = session.ratings.find((r) => r.fromUserId === session.student.id) ?? null;
+  const viewerCanRate =
+    userId === session.student.id && session.status === SessionStatus.ENDED && !studentRating;
+  const payoutMicro =
+    studentRating != null ? tutorPayoutMicrocreditsForRating(studentRating.stars) : null;
 
   return {
     viewerId: userId,
@@ -623,6 +640,15 @@ export async function getSessionBundle(sessionId: string) {
     aiSummary: session.summaries[0]
       ? { content: session.summaries[0].content, status: session.summaries[0].status }
       : null,
+    sessionRating: studentRating
+      ? {
+          stars: studentRating.stars,
+          comment: studentRating.comment,
+          createdAt: studentRating.createdAt.toISOString(),
+        }
+      : null,
+    viewerCanRate,
+    tutorSessionPayoutMicrocredits: payoutMicro != null ? payoutMicro.toString() : null,
   };
 }
 
@@ -654,8 +680,25 @@ export async function endSession(sessionId: string) {
   const userId = await getAppUserIdOrThrow();
   const s = await prisma.session.findFirst({
     where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }] },
+    include: {
+      helpRequest: { select: { title: true, body: true, subjectSlug: true } },
+      messages: {
+        orderBy: { createdAt: "asc" },
+        take: 200,
+        select: {
+          body: true,
+          sender: { select: { profile: { select: { displayName: true } } } },
+        },
+      },
+    },
   });
   if (!s) throw new Error("Not found");
+  if (s.status === SessionStatus.ENDED) {
+    return { ok: true as const };
+  }
+  if (s.status !== SessionStatus.ACTIVE) {
+    throw new Error("Session must be active to end");
+  }
 
   await prisma.$transaction([
     prisma.session.update({
@@ -666,18 +709,58 @@ export async function endSession(sessionId: string) {
       where: { id: s.helpRequestId },
       data: { status: HelpRequestStatus.COMPLETED },
     }),
-    prisma.sessionSummary.create({
-      data: {
-        sessionId,
-        status: SessionSummaryStatus.COMPLETED,
-        content:
-          "## Session recap (demo)\n\n- Key concepts reinforced\n- Next practice set suggested\n- AI confidence: illustrative only",
-        keyPoints: ["Core idea restated", "Common pitfall flagged", "Suggested follow-up"],
-        model: "learnloop-mock-v1",
-        promptVersion: "recap-1",
-      },
+    prisma.tutorProfile.updateMany({
+      where: { userId: s.tutorId },
+      data: { completedSessionCount: { increment: 1 } },
     }),
   ]);
+
+  const messageLines = s.messages.map((m) => ({
+    speaker: m.sender.profile?.displayName ?? "Participant",
+    body: m.body,
+  }));
+
+  let recapPayload = await generateSessionRecapWithGemini({
+    requestTitle: s.helpRequest.title,
+    requestBody: s.helpRequest.body,
+    subjectSlug: s.helpRequest.subjectSlug,
+    messages: messageLines,
+  });
+
+  let modelLabel: string;
+  let content: string;
+  let keyPoints: string[];
+
+  if (recapPayload) {
+    modelLabel = "google-gemini";
+    content = formatSessionRecapMarkdown(recapPayload);
+    keyPoints = recapPayload.keyPoints;
+  } else {
+    modelLabel = "learnloop-fallback-v1";
+    content = [
+      "## Session recap",
+      "",
+      "We could not reach the live AI recap service (add a **GEMINI_API_KEY** in your environment for Gemini-powered insights).",
+      "",
+      "### Offline placeholder",
+      "",
+      "- Core topics from the chat were not auto-summarized in this run.",
+      "- Ask your tutor for a one-line takeaway, or re-open the thread from **All sessions**.",
+    ].join("\n");
+    keyPoints = ["Recap unavailable — configure Gemini for structured insights", "Session marked complete in the ledger"];
+    logger.info("session.end.fallback_recap", { sessionId });
+  }
+
+  await prisma.sessionSummary.create({
+    data: {
+      sessionId,
+      status: SessionSummaryStatus.COMPLETED,
+      content,
+      keyPoints,
+      model: modelLabel,
+      promptVersion: "session-recap-v2",
+    },
+  });
 
   revalidatePath(`/dashboard/sessions/${sessionId}`);
   await publishQueryInvalidate({
@@ -695,6 +778,108 @@ export async function endSession(sessionId: string) {
     ],
   });
   return { ok: true as const };
+}
+
+const sessionRatingSchema = z.object({
+  sessionId: z.string().cuid(),
+  stars: z.number().int().min(1).max(5),
+  comment: z.string().max(2000).optional(),
+});
+
+export async function submitSessionRating(raw: unknown) {
+  const user = await getAppUserOrThrow();
+  const input = sessionRatingSchema.parse(raw);
+
+  const session = await prisma.session.findFirst({
+    where: {
+      id: input.sessionId,
+      studentId: user.id,
+      status: SessionStatus.ENDED,
+    },
+    select: { id: true, tutorId: true },
+  });
+  if (!session) throw new Error("Session not found or rating is not open yet");
+
+  const existing = await prisma.rating.findUnique({
+    where: { sessionId_fromUserId: { sessionId: input.sessionId, fromUserId: user.id } },
+  });
+  if (existing) throw new Error("You already rated this session");
+
+  const idempotencyKey = `tutor-session-payout:${input.sessionId}`;
+  const dupPayout = await prisma.transaction.findUnique({ where: { idempotencyKey } });
+  if (dupPayout) {
+    return { ok: true as const, tutorPayoutMicrocredits: dupPayout.amountMicrocredits.toString() };
+  }
+
+  const amountMicro = tutorPayoutMicrocreditsForRating(input.stars);
+  const commentTrim = input.comment?.trim();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.rating.create({
+      data: {
+        sessionId: input.sessionId,
+        fromUserId: user.id,
+        toUserId: session.tutorId,
+        stars: input.stars,
+        comment: commentTrim ? commentTrim : null,
+      },
+    });
+
+    const agg = await tx.rating.aggregate({
+      where: { toUserId: session.tutorId },
+      _avg: { stars: true },
+      _count: { _all: true },
+    });
+
+    await tx.tutorProfile.updateMany({
+      where: { userId: session.tutorId },
+      data: {
+        ...(agg._avg.stars != null ? { averageRating: agg._avg.stars } : {}),
+        totalRatingsCount: agg._count._all,
+      },
+    });
+
+    let wallet = await tx.creditWallet.findUnique({ where: { userId: session.tutorId } });
+    if (!wallet) {
+      wallet = await tx.creditWallet.create({ data: { userId: session.tutorId } });
+    }
+
+    const nextBalance = wallet.balanceMicrocredits + amountMicro;
+    await tx.transaction.create({
+      data: {
+        walletId: wallet.id,
+        actorUserId: user.id,
+        type: TransactionType.CREDIT,
+        amountMicrocredits: amountMicro,
+        balanceAfterMicrocredits: nextBalance,
+        idempotencyKey,
+        referenceKind: "SESSION_RATING",
+        referenceId: input.sessionId,
+        metadata: { stars: input.stars },
+      },
+    });
+
+    await tx.creditWallet.update({
+      where: { id: wallet.id },
+      data: {
+        balanceMicrocredits: nextBalance,
+        version: { increment: 1 },
+      },
+    });
+  });
+
+  revalidatePath(`/dashboard/sessions/${input.sessionId}`);
+  revalidatePath("/dashboard/profile");
+  await publishQueryInvalidate({
+    targets: [
+      {
+        userIds: [session.tutorId, user.id],
+        keys: [["session", input.sessionId], ["my-sessions"], ["profile-dashboard"], ["leaderboard"]],
+      },
+    ],
+  });
+
+  return { ok: true as const, tutorPayoutMicrocredits: amountMicro.toString() };
 }
 
 export async function getLeaderboardRows() {

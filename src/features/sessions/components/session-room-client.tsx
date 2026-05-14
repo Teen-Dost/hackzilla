@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { endSession, getSessionBundle, sendSessionMessage, startSession } from "@/features/help-requests/actions";
 import { SessionMediaRail } from "@/features/sessions/components/session-media-rail";
 import { SessionWhiteboard } from "@/features/sessions/components/session-whiteboard";
+import { SessionRatingPanel } from "@/features/sessions/components/session-rating-panel";
 import { ReportContentDialog } from "@/features/trust/components/report-content-dialog";
 import { useSocketIo } from "@/features/realtime/socket-io-provider";
 import { usePageVisible } from "@/features/realtime/use-page-visible";
@@ -132,7 +133,7 @@ export function SessionRoomClient({
   const end = useMutation({
     mutationFn: () => endSession(sessionId),
     onSuccess: () => {
-      toast.success("Session wrapped — AI recap saved");
+      toast.success("Session ended — recap and next steps are ready below.");
       void query.refetch();
     },
     onError: (e: Error) => toast.error(e.message),
@@ -294,9 +295,34 @@ export function SessionRoomClient({
               ) : (
                 <p className="text-xs">Recap unlocks when the session ends.</p>
               )}
+              {data.status === "ENDED" && data.tutorSessionPayoutMicrocredits ? (
+                <p className="rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-xs text-foreground/90">
+                  {data.viewerId === data.tutor.id ? (
+                    <>
+                      <span className="font-semibold text-primary">Your payout from this session: </span>
+                      {formatMicroCreditsLabel(data.tutorSessionPayoutMicrocredits)} (based on the learner’s star
+                      rating).
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-semibold text-primary">Tutor payout: </span>
+                      {formatMicroCreditsLabel(data.tutorSessionPayoutMicrocredits)} credited to your tutor after
+                      your rating.
+                    </>
+                  )}
+                </p>
+              ) : null}
             </CardContent>
           </Card>
         </div>
+
+        {data.viewerId === data.student.id && (data.viewerCanRate || data.sessionRating != null) ? (
+          <SessionRatingPanel
+            sessionId={sessionId}
+            viewerCanRate={data.viewerCanRate}
+            sessionRatingStars={data.sessionRating?.stars ?? null}
+          />
+        ) : null}
 
         <Card className="border-border/70 bg-card/70 backdrop-blur-sm">
           <CardHeader>
@@ -343,4 +369,12 @@ function formatElapsed(sec: number) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function formatMicroCreditsLabel(micro: string) {
+  const n = Number(BigInt(micro)) / 1_000_000;
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 10) return `~${n.toFixed(0)} credits`;
+  if (n >= 1) return `~${n.toFixed(1)} credits`;
+  return `~${n.toFixed(2)} credits`;
 }
