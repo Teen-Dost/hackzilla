@@ -14,7 +14,7 @@ import {
 import { prisma } from "@/lib/db/prisma";
 import { getLeaderboardDemoPeriodKey } from "@/lib/demo/leaderboard-period";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
-import { getAppUserOrThrow } from "@/lib/auth/app-user";
+import { getAppUserIdOrThrow, getAppUserOrThrow } from "@/lib/auth/app-user";
 import { publishQueryInvalidate } from "@/lib/realtime/publish-invalidate";
 import { createHelpRequestSchema } from "@/features/help-requests/schema";
 import { mockCategorize } from "@/features/help-requests/ai-mock";
@@ -116,7 +116,7 @@ export async function createHelpRequest(raw: unknown) {
 }
 
 export async function getRequestsFeed(input: { cursor?: string | null; subject?: string; q?: string }) {
-  await getAppUserOrThrow();
+  await getAppUserIdOrThrow();
 
   const where = {
     status: HelpRequestStatus.OPEN,
@@ -137,9 +137,19 @@ export async function getRequestsFeed(input: { cursor?: string | null; subject?:
       orderBy: { createdAt: "desc" },
       take: feedLimit + 1,
       ...(input.cursor ? { skip: 1, cursor: { id: input.cursor } } : {}),
-      include: {
+      select: {
+        id: true,
+        title: true,
+        body: true,
+        subjectSlug: true,
+        topicSlug: true,
+        urgency: true,
+        preferredDurationMinutes: true,
+        language: true,
+        status: true,
+        createdAt: true,
         author: { select: { id: true, profile: { select: { displayName: true, avatarUrl: true } } } },
-        aiTags: true,
+        aiTags: { select: { tag: true, confidence: true } },
         _count: { select: { interests: true } },
       },
     });
@@ -160,7 +170,7 @@ export async function getRequestsFeed(input: { cursor?: string | null; subject?:
 }
 
 export async function getRequestDetail(id: string) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const row = await prisma.helpRequest.findUnique({
     where: { id },
     include: {
@@ -172,7 +182,7 @@ export async function getRequestDetail(id: string) {
   });
   if (!row) return null;
 
-  const myInterest = row.interests.some((i) => i.tutorUserId === user.id);
+  const myInterest = row.interests.some((i) => i.tutorUserId === userId);
 
   const base = serializeRequest({
     id: row.id,
@@ -194,7 +204,7 @@ export async function getRequestDetail(id: string) {
     ...base,
     fullBody: row.body,
     authorId: row.authorId,
-    viewerIsAuthor: user.id === row.authorId,
+    viewerIsAuthor: userId === row.authorId,
     myInterest,
     interests: row.interests.map((i) => ({
       tutorUserId: i.tutorUserId,
@@ -365,15 +375,20 @@ export async function matchTutor(raw: unknown) {
 }
 
 export async function getMySessions() {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const rows = await prisma.session.findMany({
-    where: { OR: [{ studentId: user.id }, { tutorId: user.id }] },
+    where: { OR: [{ studentId: userId }, { tutorId: userId }] },
     orderBy: { updatedAt: "desc" },
     take: 30,
-    include: {
+    select: {
+      id: true,
+      status: true,
+      studentId: true,
+      tutorId: true,
+      updatedAt: true,
       helpRequest: { select: { title: true, subjectSlug: true } },
-      student: { include: { profile: true } },
-      tutor: { include: { profile: true } },
+      student: { select: { profile: { select: { displayName: true } } } },
+      tutor: { select: { profile: { select: { displayName: true } } } },
     },
   });
   return rows.map((s) => ({
@@ -382,16 +397,16 @@ export async function getMySessions() {
     title: s.helpRequest.title,
     subjectSlug: s.helpRequest.subjectSlug,
     updatedAt: s.updatedAt.toISOString(),
-    role: s.studentId === user.id ? ("student" as const) : ("tutor" as const),
+    role: s.studentId === userId ? ("student" as const) : ("tutor" as const),
     peerName:
-      s.studentId === user.id ? s.tutor.profile?.displayName ?? "Tutor" : s.student.profile?.displayName ?? "Student",
+      s.studentId === userId ? s.tutor.profile?.displayName ?? "Tutor" : s.student.profile?.displayName ?? "Student",
   }));
 }
 
 export async function listNotifications() {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const rows = await prisma.notification.findMany({
-    where: { userId: user.id },
+    where: { userId },
     orderBy: { createdAt: "desc" },
     take: 40,
   });
@@ -407,32 +422,32 @@ export async function listNotifications() {
 }
 
 export async function markNotificationRead(id: string) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   await prisma.notification.updateMany({
-    where: { id, userId: user.id },
+    where: { id, userId },
     data: { status: NotificationStatus.READ, readAt: new Date() },
   });
   revalidatePath("/dashboard");
   await publishQueryInvalidate({
-    targets: [{ userIds: [user.id], keys: [["notifications"]] }],
+    targets: [{ userIds: [userId], keys: [["notifications"]] }],
   });
   return { ok: true as const };
 }
 
 export async function markAllNotificationsRead() {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   await prisma.notification.updateMany({
-    where: { userId: user.id, status: NotificationStatus.UNREAD },
+    where: { userId, status: NotificationStatus.UNREAD },
     data: { status: NotificationStatus.READ, readAt: new Date() },
   });
   await publishQueryInvalidate({
-    targets: [{ userIds: [user.id], keys: [["notifications"]] }],
+    targets: [{ userIds: [userId], keys: [["notifications"]] }],
   });
   return { ok: true as const };
 }
 
 export async function sendSessionMessage(raw: unknown) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const schema = z.object({
     sessionId: z.string().cuid(),
     body: z.string().min(1).max(8000),
@@ -443,7 +458,7 @@ export async function sendSessionMessage(raw: unknown) {
   const session = await prisma.session.findFirst({
     where: {
       id: input.sessionId,
-      OR: [{ studentId: user.id }, { tutorId: user.id }],
+      OR: [{ studentId: userId }, { tutorId: userId }],
       status: { in: [SessionStatus.SCHEDULED, SessionStatus.ACTIVE] },
     },
   });
@@ -452,7 +467,7 @@ export async function sendSessionMessage(raw: unknown) {
   await prisma.message.create({
     data: {
       sessionId: input.sessionId,
-      senderId: user.id,
+      senderId: userId,
       body: input.body,
       clientMessageId: input.clientMessageId,
     },
@@ -471,11 +486,11 @@ export async function sendSessionMessage(raw: unknown) {
 }
 
 export async function getSessionBundle(sessionId: string) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const session = await prisma.session.findFirst({
     where: {
       id: sessionId,
-      OR: [{ studentId: user.id }, { tutorId: user.id }],
+      OR: [{ studentId: userId }, { tutorId: userId }],
     },
     include: {
       helpRequest: { select: { title: true } },
@@ -515,7 +530,7 @@ export async function getSessionBundle(sessionId: string) {
       createdAt: m.createdAt.toISOString(),
       senderId: m.senderId,
       senderName: m.sender.profile?.displayName ?? "User",
-      isMine: m.senderId === user.id,
+      isMine: m.senderId === userId,
     })),
     aiSummary: session.summaries[0]
       ? { content: session.summaries[0].content, status: session.summaries[0].status }
@@ -524,13 +539,13 @@ export async function getSessionBundle(sessionId: string) {
 }
 
 export async function startSession(sessionId: string) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   await prisma.session.updateMany({
-    where: { id: sessionId, OR: [{ studentId: user.id }, { tutorId: user.id }], status: SessionStatus.SCHEDULED },
+    where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }], status: SessionStatus.SCHEDULED },
     data: { status: SessionStatus.ACTIVE, startedAt: new Date() },
   });
   const s = await prisma.session.findFirst({
-    where: { id: sessionId, OR: [{ studentId: user.id }, { tutorId: user.id }] },
+    where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }] },
     select: { studentId: true, tutorId: true, helpRequestId: true },
   });
   if (s) {
@@ -548,9 +563,9 @@ export async function startSession(sessionId: string) {
 }
 
 export async function endSession(sessionId: string) {
-  const user = await getAppUserOrThrow();
+  const userId = await getAppUserIdOrThrow();
   const s = await prisma.session.findFirst({
-    where: { id: sessionId, OR: [{ studentId: user.id }, { tutorId: user.id }] },
+    where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }] },
   });
   if (!s) throw new Error("Not found");
 
@@ -595,7 +610,7 @@ export async function endSession(sessionId: string) {
 }
 
 export async function getLeaderboardRows() {
-  await getAppUserOrThrow();
+  await getAppUserIdOrThrow();
   const periodKey = getLeaderboardDemoPeriodKey();
 
   try {

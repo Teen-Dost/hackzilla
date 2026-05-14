@@ -4,7 +4,7 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ArrowRight, Video, AlertCircle } from "lucide-react";
+import { ArrowRight, Video, AlertCircle, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -14,14 +14,29 @@ import { usePageVisible } from "@/features/realtime/use-page-visible";
 import { EmptyState } from "@/components/feedback/empty-state";
 import { ListPageSkeleton } from "@/components/feedback/list-page-skeleton";
 import { springSnappy } from "@/animations/variants";
+import { cn } from "@/lib/utils";
 
-export function SessionsListClient() {
+export type MySessionListItem = Awaited<ReturnType<typeof getMySessions>>[number];
+
+export function SessionsListClient({ initialSessions }: { initialSessions?: MySessionListItem[] }) {
   const pageVisible = usePageVisible();
   const pollMs = useAdaptiveRefetchInterval(25_000);
+  const initialMeta = React.useMemo(() => {
+    if (!initialSessions) return null;
+    return { data: initialSessions, updatedAt: Date.now() };
+  }, [initialSessions]);
+
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["my-sessions"],
     queryFn: () => getMySessions(),
     refetchInterval: pageVisible ? pollMs : false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    staleTime: 45_000,
+    gcTime: 1000 * 60 * 60 * 12,
+    ...(initialMeta
+      ? { initialData: initialMeta.data, initialDataUpdatedAt: initialMeta.updatedAt }
+      : {}),
   });
 
   if (isLoading && !data) {
@@ -56,9 +71,22 @@ export function SessionsListClient() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Jump back into live rooms — status syncs every few seconds.</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Jump back into live rooms — status syncs every few seconds.</p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="shrink-0 gap-2 touch-manipulation self-start sm:self-auto"
+          aria-label="Refresh sessions list"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} aria-hidden />
+          Refresh
+        </Button>
       </div>
 
       {sessions.length === 0 ? (

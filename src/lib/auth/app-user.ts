@@ -52,3 +52,34 @@ export async function getAppUserOrThrow() {
   if (!user) throw new AuthError("Unauthorized");
   return user;
 }
+
+/** Auth + internal id only — use for hot read paths (feeds, lists) to avoid loading wallet/tutor aggregates every poll. */
+export const getAppUserIdOrThrow = cache(async () => {
+  const { userId: clerkUserId } = await auth();
+  if (!clerkUserId) throw new AuthError("Unauthorized");
+
+  const row = await prisma.user.findFirst({
+    where: { clerkUserId, deletedAt: null },
+    select: { id: true },
+  });
+  if (row) return row.id;
+
+  const clerk = await currentUser();
+  await upsertUserFromClerkSync({
+    id: clerkUserId,
+    primaryEmail:
+      clerk?.primaryEmailAddress?.emailAddress ??
+      clerk?.emailAddresses?.[0]?.emailAddress ??
+      null,
+    firstName: clerk?.firstName ?? null,
+    lastName: clerk?.lastName ?? null,
+    imageUrl: clerk?.imageUrl ?? null,
+  });
+
+  const again = await prisma.user.findFirst({
+    where: { clerkUserId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!again) throw new AuthError("Unauthorized");
+  return again.id;
+});
