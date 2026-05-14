@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, Loader2, Sparkles, Zap } from "lucide-react";
+import { AlertCircle, Check, Loader2, Sparkles, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -150,6 +150,14 @@ export function CreateRequestModal({ open, onOpenChange }: Props) {
                     {body.trim().length}/{minBodyLength}
                   </span>
                 </div>
+                {body.trim().length > 0 && body.trim().length < minBodyLength ? (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>
+                      Description is too short. Add at least {minBodyLength} characters so the request can be published.
+                    </p>
+                  </div>
+                ) : null}
               </motion.div>
             ) : null}
             {step === 1 ? (
