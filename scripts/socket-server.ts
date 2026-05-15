@@ -14,6 +14,9 @@ import type { InvalidatePublishPayload } from "../src/lib/realtime/publish-inval
 import type {
   MessageNewEventPayload,
   SessionSubscribePayload,
+  WebrtcIcePayload,
+  WebrtcPeerReadyPayload,
+  WebrtcSignalPayload,
   WhiteboardStrokePayload,
 } from "../src/server/socket/events";
 
@@ -219,7 +222,6 @@ io = new Server(httpServer, {
     },
     credentials: true,
   },
-  transports: ["websocket"],
 });
 
 io.use((socket, next) => {
@@ -276,6 +278,41 @@ io.on("connection", (socket) => {
       typeof raw === "object" && raw && "sessionId" in raw ? String((raw as { sessionId: string }).sessionId) : "";
     if (!sessionId || !socket.rooms.has(sessionRoom(sessionId))) return;
     io.to(sessionRoom(sessionId)).emit(ServerToClientEvents.WB_CLEAR, { sessionId });
+  });
+
+  socket.on(ClientToServerEvents.WEBRTC_READY, (raw: unknown) => {
+    const sessionId = typeof raw === "object" && raw && "sessionId" in raw ? String((raw as { sessionId: string }).sessionId) : "";
+    if (!sessionId || !socket.rooms.has(sessionRoom(sessionId))) return;
+    socket.to(sessionRoom(sessionId)).emit(ServerToClientEvents.WEBRTC_PEER_READY, {
+      sessionId,
+      userId: uid,
+    } satisfies WebrtcPeerReadyPayload);
+  });
+
+  socket.on(ClientToServerEvents.WEBRTC_SIGNAL, (raw: unknown) => {
+    const p = raw as Partial<WebrtcSignalPayload>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    const sdp = typeof p.sdp === "string" ? p.sdp : "";
+    const type = p.type === "offer" || p.type === "answer" ? p.type : null;
+    if (!sessionId || !sdp || !type || !socket.rooms.has(sessionRoom(sessionId))) return;
+    if (sdp.length > 500_000) return;
+    socket.to(sessionRoom(sessionId)).emit(ServerToClientEvents.WEBRTC_SIGNAL, {
+      sessionId,
+      fromUserId: uid,
+      type,
+      sdp,
+    } satisfies WebrtcSignalPayload);
+  });
+
+  socket.on(ClientToServerEvents.WEBRTC_ICE, (raw: unknown) => {
+    const p = raw as Partial<WebrtcIcePayload>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    if (!sessionId || !socket.rooms.has(sessionRoom(sessionId))) return;
+    socket.to(sessionRoom(sessionId)).emit(ServerToClientEvents.WEBRTC_ICE, {
+      sessionId,
+      fromUserId: uid,
+      candidate: (p.candidate ?? null) as WebrtcIcePayload["candidate"],
+    } satisfies WebrtcIcePayload);
   });
 });
 
