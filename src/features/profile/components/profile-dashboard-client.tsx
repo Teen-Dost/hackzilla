@@ -26,7 +26,7 @@ export function ProfileDashboardClient() {
 
   if (isLoading && !data) {
     return (
-      <div className="mx-auto max-w-4xl space-y-8">
+      <div className="mx-auto w-full max-w-full space-y-8">
         <div className="h-48 animate-pulse rounded-2xl border border-border/40 bg-muted/20" />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[1, 2, 3, 4].map((i) => (
@@ -40,7 +40,7 @@ export function ProfileDashboardClient() {
 
   if (isError) {
     return (
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto w-full max-w-full">
         <EmptyState
           icon={AlertCircle}
           title="Profile didn’t load"
@@ -63,7 +63,7 @@ export function ProfileDashboardClient() {
   const xpPct = Math.min(100, Math.round((xp % 500) / 5));
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
+    <div className="mx-auto w-full max-w-full space-y-8">
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="relative overflow-hidden rounded-2xl border border-border/70 bg-gradient-to-br from-card via-card to-primary/5 p-6 shadow-card">
         <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/10 blur-3xl" />
         <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center">

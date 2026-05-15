@@ -41,6 +41,11 @@ export function SocketIoProvider({ children }: { children: React.ReactNode }) {
 
       s.on("connect", () => setConnected(true));
       s.on("disconnect", () => setConnected(false));
+      s.on("connect_error", (err) => {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[socket] connect_error:", err.message);
+        }
+      });
 
       s.on(ServerToClientEvents.RT_INVALIDATE, (payload: { keys?: (string | number)[][] }) => {
         for (const key of payload.keys ?? []) {

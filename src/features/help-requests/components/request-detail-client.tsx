@@ -23,11 +23,14 @@ export function RequestDetailClient({ id }: { id: string }) {
     queryKey: ["request-detail", id],
     queryFn: () => getRequestDetail(id),
     refetchInterval: pageVisible ? pollMs : false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    staleTime: 2 * 60_000,
   });
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-5xl space-y-6">
+      <div className="mx-auto w-full max-w-full space-y-6">
         <div className="h-4 w-32 animate-pulse rounded-md bg-muted/30" />
         <ListPageSkeleton rows={3} />
       </div>
@@ -36,7 +39,7 @@ export function RequestDetailClient({ id }: { id: string }) {
 
   if (isError) {
     return (
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto w-full max-w-full">
         <EmptyState
           icon={RefreshCw}
           title="This doubt didn’t load"
@@ -55,7 +58,7 @@ export function RequestDetailClient({ id }: { id: string }) {
 
   if (isSuccess && !data) {
     return (
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto w-full max-w-full">
         <EmptyState
           icon={FileQuestion}
           title="Doubt not found"
@@ -75,7 +78,7 @@ export function RequestDetailClient({ id }: { id: string }) {
     data.urgency === "HIGH" ? "text-rose-400 border-rose-500/30 bg-rose-500/10" : data.urgency === "MEDIUM" ? "text-amber-300 border-amber-500/30 bg-amber-500/10" : "text-emerald-300 border-emerald-500/20 bg-emerald-500/10";
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8">
+    <div className="mx-auto w-full max-w-full space-y-8">
       <Link
         href="/dashboard/requests"
         className="inline-flex items-center gap-2 rounded-lg text-sm text-muted-foreground outline-none ring-offset-background transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"

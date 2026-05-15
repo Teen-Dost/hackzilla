@@ -19,4 +19,10 @@ if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
 }
 
+/** Pooled Neon / cold starts can exceed Prisma defaults (maxWait 2s, interactive timeout 5s). */
+export const prismaInteractiveTransactionOptions = {
+  maxWait: 15_000,
+  timeout: 30_000,
+} as const;
+
 export type { PrismaClient };

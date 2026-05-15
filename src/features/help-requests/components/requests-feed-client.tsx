@@ -83,7 +83,7 @@ export function RequestsFeedClient({ initialFeedPage }: { initialFeedPage?: Requ
     refetchOnMount: false,
     refetchOnReconnect: false,
     retry: isLearnloopDemo() ? 2 : 1,
-    staleTime: 45_000,
+    staleTime: 2 * 60_000,
     gcTime: 1000 * 60 * 60 * 12,
     ...(ssrInfinite && matchesSsrFilters
       ? { initialData: { pages: ssrInfinite.pages, pageParams: ssrInfinite.pageParams }, initialDataUpdatedAt: ssrInfinite.updatedAt }
@@ -103,7 +103,7 @@ export function RequestsFeedClient({ initialFeedPage }: { initialFeedPage?: Requ
   const feedRefetching = query.isFetching && !query.isFetchingNextPage;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto w-full max-w-full space-y-6">
       {showDemoOffline ? <DemoFeedOfflineStrip onRetry={() => void query.refetch()} /> : null}
 
       {showGenericError ? (

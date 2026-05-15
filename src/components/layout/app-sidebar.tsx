@@ -2,12 +2,11 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { BookOpen, Command, LayoutDashboard, MessageSquare, Sparkles, Trophy, UserCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Logo } from "@/components/brand/logo";
 
 const nav = [
@@ -21,10 +20,17 @@ const nav = [
 
 export function AppSidebar({ onNavigate, onCommandOpen }: { onNavigate?: () => void; onCommandOpen?: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    for (const { href } of nav) {
+      router.prefetch(href);
+    }
+  }, [router]);
 
   return (
-    <aside className="flex h-full w-[260px] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 items-center border-b border-sidebar-border px-4">
+    <aside className="flex h-full w-[260px] flex-col border-r-2 border-sidebar-border bg-sidebar text-sidebar-foreground">
+      <div className="flex h-14 items-center border-b-2 border-sidebar-border px-4">
         <Logo />
       </div>
       <ScrollArea className="flex-1 py-3">
@@ -32,24 +38,19 @@ export function AppSidebar({ onNavigate, onCommandOpen }: { onNavigate?: () => v
           {nav.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
             return (
-              <Tooltip key={href}>
-                <TooltipTrigger asChild>
-                  <Link href={href} onClick={onNavigate}>
-                    <span
-                      className={cn(
-                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                        active ? "bg-sidebar-accent text-foreground" : "text-sidebar-foreground hover:bg-sidebar-accent/80 hover:text-foreground",
-                      )}
-                    >
-                      <Icon className="h-4 w-4 shrink-0 opacity-80" />
-                      {label}
-                    </span>
-                  </Link>
-                </TooltipTrigger>
-                <TooltipContent side="right" className="hidden lg:block">
+              <Link key={href} href={href} onClick={onNavigate}>
+                <span
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                    active
+                      ? "border border-primary/25 bg-primary/12 text-foreground"
+                      : "text-sidebar-foreground hover:border hover:border-transparent hover:bg-primary/8 hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0 opacity-80" />
                   {label}
-                </TooltipContent>
-              </Tooltip>
+                </span>
+              </Link>
             );
           })}
         </nav>

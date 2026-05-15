@@ -15,7 +15,7 @@ export function AppHeader({ onMenuClick, onCommandClick }: AppHeaderProps) {
   const { theme, setTheme } = useTheme();
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/80 bg-background/80 px-4 backdrop-blur-xl">
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b-2 border-border bg-card/95 px-4 backdrop-blur-sm">
       <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenuClick} aria-label="Open menu">
         <Menu className="h-5 w-5" />
       </Button>

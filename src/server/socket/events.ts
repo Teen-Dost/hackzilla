@@ -99,3 +99,5 @@ export type MessageNewEventPayload = {
   sessionId: string;
   message: SessionLiveChatMessagePayload;
 };
+
+export type SessionStartedPayload = { sessionId: string };
