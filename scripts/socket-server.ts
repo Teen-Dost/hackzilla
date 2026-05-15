@@ -38,7 +38,7 @@ function loadEnvFiles() {
 
 loadEnvFiles();
 
-const PORT = Number.parseInt(process.env.SOCKET_PORT ?? "3001", 10);
+const PORT = Number.parseInt(process.env.PORT ?? process.env.SOCKET_PORT ?? "3001", 10);
 const SOCKET_JWT_SECRET = process.env.SOCKET_JWT_SECRET ?? "";
 const INTERNAL_SECRET = process.env.SOCKET_INTERNAL_SECRET ?? "";
 const CORS_ORIGINS = (process.env.SOCKET_CORS_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000")
