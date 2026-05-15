@@ -11,17 +11,29 @@ import {
   SessionStatus,
   TransactionType,
 } from "@prisma/client";
-import { prisma } from "@/lib/db/prisma";
-import { tutorPayoutMicrocreditsForRating } from "@/features/sessions/session-economics";
+import { prisma, prismaInteractiveTransactionOptions } from "@/lib/db/prisma";
+import {
+  STUDENT_SESSION_FEE_MICRO,
+  tutorPayoutMicrocreditsForRating,
+} from "@/features/sessions/session-economics";
 import { getLeaderboardDemoPeriodKey } from "@/lib/demo/leaderboard-period";
 import { isLearnloopDemo } from "@/lib/demo/demo-flags";
 import { getAppUserIdOrThrow, getAppUserOrThrow } from "@/lib/auth/app-user";
 import { publishQueryInvalidate } from "@/lib/realtime/publish-invalidate";
 import { publishSessionChatMessage } from "@/lib/realtime/publish-session-chat";
+import { publishSessionStarted } from "@/lib/realtime/publish-session-started";
 import { createHelpRequestSchema } from "@/features/help-requests/schema";
 import { mockCategorize } from "@/features/help-requests/ai-mock";
 
 const feedLimit = 20;
+
+/** Learner fee on rating: off in LearnLoop demo mode or local `next dev` (so ratings work without wallet top-ups). Force in dev with LEARNLOOP_CHARGE_SESSION_FEE=1. */
+function shouldDebitLearnerSessionFeeOnRating(): boolean {
+  if (process.env.LEARNLOOP_CHARGE_SESSION_FEE === "1") return true;
+  if (isLearnloopDemo()) return false;
+  if (process.env.NODE_ENV !== "production") return false;
+  return true;
+}
 
 function serializeRequest(row: {
   id: string;
@@ -63,51 +75,54 @@ export async function createHelpRequest(raw: unknown) {
   const user = await getAppUserOrThrow();
   const input = createHelpRequestSchema.parse(raw);
 
-  const req = await prisma.$transaction(async (tx) => {
-    const created = await tx.helpRequest.create({
-      data: {
-        authorId: user.id,
+  const req = await prisma.$transaction(
+    async (tx) => {
+      const created = await tx.helpRequest.create({
+        data: {
+          authorId: user.id,
+          title: input.title,
+          body: input.body,
+          subjectSlug: input.subjectSlug,
+          topicSlug: input.topicSlug,
+          urgency: input.urgency,
+          preferredDurationMinutes: input.preferredDurationMinutes,
+          language: input.language,
+          status: HelpRequestStatus.OPEN,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      const tags = mockCategorize({
         title: input.title,
         body: input.body,
         subjectSlug: input.subjectSlug,
-        topicSlug: input.topicSlug,
-        urgency: input.urgency,
-        preferredDurationMinutes: input.preferredDurationMinutes,
-        language: input.language,
-        status: HelpRequestStatus.OPEN,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-    });
-
-    const tags = mockCategorize({
-      title: input.title,
-      body: input.body,
-      subjectSlug: input.subjectSlug,
-    });
-
-    await tx.aITag.createMany({
-      data: tags.map((t) => ({
-        entityKind: "HELP_REQUEST" as const,
-        entityId: created.id,
-        helpRequestId: created.id,
-        tag: t.tag,
-        confidence: t.confidence,
-        model: "learnloop-mock-v1",
-        promptVersion: "demo-1",
-      })),
-    });
-
-    const ach = await tx.achievement.findUnique({ where: { key: "FIRST_HELP_REQUEST" } });
-    if (ach) {
-      await tx.userAchievement.upsert({
-        where: { userId_achievementId: { userId: user.id, achievementId: ach.id } },
-        create: { userId: user.id, achievementId: ach.id },
-        update: {},
       });
-    }
 
-    return created;
-  });
+      await tx.aITag.createMany({
+        data: tags.map((t) => ({
+          entityKind: "HELP_REQUEST" as const,
+          entityId: created.id,
+          helpRequestId: created.id,
+          tag: t.tag,
+          confidence: t.confidence,
+          model: "learnloop-mock-v1",
+          promptVersion: "demo-1",
+        })),
+      });
+
+      const ach = await tx.achievement.findUnique({ where: { key: "FIRST_HELP_REQUEST" } });
+      if (ach) {
+        await tx.userAchievement.upsert({
+          where: { userId_achievementId: { userId: user.id, achievementId: ach.id } },
+          create: { userId: user.id, achievementId: ach.id },
+          update: {},
+        });
+      }
+
+      return created;
+    },
+    prismaInteractiveTransactionOptions,
+  );
 
   revalidatePath("/dashboard/requests");
   await publishQueryInvalidate({
@@ -271,25 +286,28 @@ export async function expressInterest(requestId: string) {
   if (!req) throw new Error("Request not available");
   if (req.authorId === user.id) throw new Error("Cannot express interest on own request");
 
-  await prisma.$transaction(async (tx) => {
-    await tx.helpRequestInterest.upsert({
-      where: { requestId_tutorUserId: { requestId, tutorUserId: user.id } },
-      create: { requestId, tutorUserId: user.id },
-      update: {},
-    });
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.helpRequestInterest.upsert({
+        where: { requestId_tutorUserId: { requestId, tutorUserId: user.id } },
+        create: { requestId, tutorUserId: user.id },
+        update: {},
+      });
 
-    await tx.notification.create({
-      data: {
-        userId: req.authorId,
-        channel: NotificationChannel.IN_APP,
-        status: NotificationStatus.UNREAD,
-        type: "TUTOR_INTEREST",
-        title: "A tutor is interested",
-        body: `${user.profile?.displayName ?? "Someone"} wants to help with: ${req.title}`,
-        payload: { requestId, tutorUserId: user.id },
-      },
-    });
-  });
+      await tx.notification.create({
+        data: {
+          userId: req.authorId,
+          channel: NotificationChannel.IN_APP,
+          status: NotificationStatus.UNREAD,
+          type: "TUTOR_INTEREST",
+          title: "A tutor is interested",
+          body: `${user.profile?.displayName ?? "Someone"} wants to help with: ${req.title}`,
+          payload: { requestId, tutorUserId: user.id },
+        },
+      });
+    },
+    prismaInteractiveTransactionOptions,
+  );
 
   revalidatePath("/dashboard/requests");
   revalidatePath(`/dashboard/requests/${requestId}`);
@@ -365,38 +383,53 @@ export async function matchTutor(raw: unknown) {
   if (!req || req.authorId !== user.id) throw new Error("Only the author can match");
   if (req.status !== HelpRequestStatus.OPEN) throw new Error("Request is not open");
 
-  const session = await prisma.$transaction(async (tx) => {
-    await tx.helpRequest.update({
-      where: { id: requestId },
-      data: {
-        status: HelpRequestStatus.MATCHED,
-        acceptedTutorId: tutorUserId,
-      },
-    });
+  const session = await prisma.$transaction(
+    async (tx) => {
+      await tx.helpRequest.update({
+        where: { id: requestId },
+        data: {
+          status: HelpRequestStatus.MATCHED,
+          acceptedTutorId: tutorUserId,
+        },
+      });
 
-    const s = await tx.session.create({
-      data: {
-        helpRequestId: requestId,
-        studentId: req.authorId,
-        tutorId: tutorUserId,
-        status: SessionStatus.SCHEDULED,
-      },
-    });
+      const s = await tx.session.create({
+        data: {
+          helpRequestId: requestId,
+          studentId: req.authorId,
+          tutorId: tutorUserId,
+          status: SessionStatus.SCHEDULED,
+        },
+      });
 
-    await tx.notification.create({
-      data: {
-        userId: tutorUserId,
-        channel: NotificationChannel.IN_APP,
-        status: NotificationStatus.UNREAD,
-        type: "REQUEST_MATCHED",
-        title: "You were matched",
-        body: `A session is ready for: ${req.title}`,
-        payload: { requestId, sessionId: s.id },
-      },
-    });
+      await tx.notification.create({
+        data: {
+          userId: tutorUserId,
+          channel: NotificationChannel.IN_APP,
+          status: NotificationStatus.UNREAD,
+          type: "REQUEST_MATCHED",
+          title: "You were chosen as tutor",
+          body: `The learner matched with you for: ${req.title}. Open the session room when you are ready, then ask them to start the timer.`,
+          payload: { requestId, sessionId: s.id },
+        },
+      });
 
-    return s;
-  });
+      await tx.notification.create({
+        data: {
+          userId: req.authorId,
+          channel: NotificationChannel.IN_APP,
+          status: NotificationStatus.UNREAD,
+          type: "REQUEST_MATCHED_STUDENT",
+          title: "Tutor locked in",
+          body: `You matched with a tutor for: ${req.title}. Open the session together; they will ask you to start when you are both ready.`,
+          payload: { requestId, sessionId: s.id },
+        },
+      });
+
+      return s;
+    },
+    prismaInteractiveTransactionOptions,
+  );
 
   revalidatePath("/dashboard/requests");
   revalidatePath("/dashboard/sessions");
@@ -559,6 +592,7 @@ export async function getSessionBundle(sessionId: string) {
       status: true,
       startedAt: true,
       endedAt: true,
+      startRequestedAt: true,
       helpRequest: { select: { title: true } },
       student: {
         select: {
@@ -599,12 +633,23 @@ export async function getSessionBundle(sessionId: string) {
   const payoutMicro =
     studentRating != null ? tutorPayoutMicrocreditsForRating(studentRating.stars) : null;
 
+  const startRequestedAt = session.startRequestedAt?.toISOString() ?? null;
+
   return {
     viewerId: userId,
     id: session.id,
     status: session.status,
     startedAt: session.startedAt?.toISOString() ?? null,
     endedAt: session.endedAt?.toISOString() ?? null,
+    startRequestedAt,
+    canRequestSessionStart:
+      userId === session.tutor.id &&
+      session.status === SessionStatus.SCHEDULED &&
+      session.startRequestedAt == null,
+    canConfirmSessionStart:
+      userId === session.student.id &&
+      session.status === SessionStatus.SCHEDULED &&
+      session.startRequestedAt != null,
     requestTitle: session.helpRequest.title,
     student: {
       id: session.student.id,
@@ -635,30 +680,97 @@ export async function getSessionBundle(sessionId: string) {
       : null,
     viewerCanRate,
     tutorSessionPayoutMicrocredits: payoutMicro != null ? payoutMicro.toString() : null,
+    studentSessionFeeMicrocredits: shouldDebitLearnerSessionFeeOnRating()
+      ? STUDENT_SESSION_FEE_MICRO.toString()
+      : "0",
   };
 }
 
-export async function startSession(sessionId: string) {
+export async function requestSessionStart(sessionId: string) {
   const userId = await getAppUserIdOrThrow();
-  await prisma.session.updateMany({
-    where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }], status: SessionStatus.SCHEDULED },
-    data: { status: SessionStatus.ACTIVE, startedAt: new Date() },
-  });
   const s = await prisma.session.findFirst({
-    where: { id: sessionId, OR: [{ studentId: userId }, { tutorId: userId }] },
-    select: { studentId: true, tutorId: true, helpRequestId: true },
+    where: { id: sessionId, tutorId: userId, status: SessionStatus.SCHEDULED },
+    select: { id: true, studentId: true, helpRequestId: true, startRequestedAt: true },
   });
-  if (s) {
-    await publishQueryInvalidate({
-      targets: [
-        {
-          userIds: [s.studentId, s.tutorId],
-          keys: [["session", sessionId], ["my-sessions"], ["request-detail", s.helpRequestId]],
-        },
-      ],
-    });
+  if (!s) throw new Error("Only the tutor can request start, or the session is not in the waiting state.");
+
+  if (s.startRequestedAt) {
+    revalidatePath(`/dashboard/sessions/${sessionId}`);
+    return { ok: true as const };
   }
+
+  await prisma.session.update({
+    where: { id: sessionId },
+    data: { startRequestedAt: new Date() },
+  });
+
+  await prisma.notification.create({
+    data: {
+      userId: s.studentId,
+      channel: NotificationChannel.IN_APP,
+      status: NotificationStatus.UNREAD,
+      type: "SESSION_START_REQUESTED",
+      title: "Tutor is ready",
+      body: "Your tutor is ready to begin. Open this session and tap Start session to begin the timer.",
+      payload: { sessionId },
+    },
+  });
+
   revalidatePath(`/dashboard/sessions/${sessionId}`);
+  await publishQueryInvalidate({
+    targets: [
+      {
+        userIds: [s.studentId, userId],
+        keys: [["session", sessionId], ["my-sessions"], ["notifications"], ["request-detail", s.helpRequestId]],
+      },
+    ],
+  });
+  return { ok: true as const };
+}
+
+export async function confirmSessionStart(sessionId: string) {
+  const userId = await getAppUserIdOrThrow();
+  const s = await prisma.session.findFirst({
+    where: {
+      id: sessionId,
+      studentId: userId,
+      status: SessionStatus.SCHEDULED,
+      startRequestedAt: { not: null },
+    },
+    select: { id: true, tutorId: true, studentId: true, helpRequestId: true },
+  });
+  if (!s) {
+    throw new Error("Your tutor must request start first, or you are not the learner on this session.");
+  }
+
+  const updated = await prisma.session.updateMany({
+    where: { id: sessionId, status: SessionStatus.SCHEDULED, studentId: userId, startRequestedAt: { not: null } },
+    data: { status: SessionStatus.ACTIVE, startedAt: new Date(), startRequestedAt: null },
+  });
+  if (updated.count === 0) throw new Error("Session could not be started — refresh and try again.");
+
+  await prisma.notification.create({
+    data: {
+      userId: s.tutorId,
+      channel: NotificationChannel.IN_APP,
+      status: NotificationStatus.UNREAD,
+      type: "SESSION_LIVE",
+      title: "Session is live",
+      body: "The learner started the timer. You can wrap up with Close session when you are finished.",
+      payload: { sessionId },
+    },
+  });
+
+  void publishSessionStarted({ sessionId });
+  revalidatePath(`/dashboard/sessions/${sessionId}`);
+  await publishQueryInvalidate({
+    targets: [
+      {
+        userIds: [s.studentId, s.tutorId],
+        keys: [["session", sessionId], ["my-sessions"], ["notifications"], ["request-detail", s.helpRequestId]],
+      },
+    ],
+  });
   return { ok: true as const };
 }
 
@@ -678,24 +790,36 @@ export async function endSession(sessionId: string) {
   if (s.status === SessionStatus.ENDED) {
     return { ok: true as const };
   }
-  if (s.status !== SessionStatus.ACTIVE) {
-    throw new Error("Session must be active to end");
-  }
 
-  await prisma.$transaction([
-    prisma.session.update({
-      where: { id: sessionId },
-      data: { status: SessionStatus.ENDED, endedAt: new Date() },
-    }),
-    prisma.helpRequest.update({
-      where: { id: s.helpRequestId },
-      data: { status: HelpRequestStatus.COMPLETED },
-    }),
-    prisma.tutorProfile.updateMany({
-      where: { userId: s.tutorId },
-      data: { completedSessionCount: { increment: 1 } },
-    }),
-  ]);
+  if (s.status === SessionStatus.SCHEDULED) {
+    await prisma.$transaction([
+      prisma.session.update({
+        where: { id: sessionId },
+        data: { status: SessionStatus.ENDED, endedAt: new Date() },
+      }),
+      prisma.helpRequest.update({
+        where: { id: s.helpRequestId },
+        data: { status: HelpRequestStatus.COMPLETED },
+      }),
+    ]);
+  } else if (s.status === SessionStatus.ACTIVE) {
+    await prisma.$transaction([
+      prisma.session.update({
+        where: { id: sessionId },
+        data: { status: SessionStatus.ENDED, endedAt: new Date() },
+      }),
+      prisma.helpRequest.update({
+        where: { id: s.helpRequestId },
+        data: { status: HelpRequestStatus.COMPLETED },
+      }),
+      prisma.tutorProfile.updateMany({
+        where: { userId: s.tutorId },
+        data: { completedSessionCount: { increment: 1 } },
+      }),
+    ]);
+  } else {
+    throw new Error("Session cannot be ended from this state");
+  }
 
   revalidatePath(`/dashboard/sessions/${sessionId}`);
   await publishQueryInvalidate({
@@ -743,65 +867,109 @@ export async function submitSessionRating(raw: unknown) {
   const idempotencyKey = `tutor-session-payout:${input.sessionId}`;
   const dupPayout = await prisma.transaction.findUnique({ where: { idempotencyKey } });
   if (dupPayout) {
-    return { ok: true as const, tutorPayoutMicrocredits: dupPayout.amountMicrocredits.toString() };
+    return {
+      ok: true as const,
+      tutorPayoutMicrocredits: dupPayout.amountMicrocredits.toString(),
+      studentSessionFeeMicrocredits: shouldDebitLearnerSessionFeeOnRating()
+        ? STUDENT_SESSION_FEE_MICRO.toString()
+        : "0",
+    };
   }
 
   const amountMicro = tutorPayoutMicrocreditsForRating(input.stars);
   const commentTrim = input.comment?.trim();
 
-  await prisma.$transaction(async (tx) => {
-    await tx.rating.create({
-      data: {
-        sessionId: input.sessionId,
-        fromUserId: user.id,
-        toUserId: session.tutorId,
-        stars: input.stars,
-        comment: commentTrim ? commentTrim : null,
-      },
-    });
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.rating.create({
+        data: {
+          sessionId: input.sessionId,
+          fromUserId: user.id,
+          toUserId: session.tutorId,
+          stars: input.stars,
+          comment: commentTrim ? commentTrim : null,
+        },
+      });
 
-    const agg = await tx.rating.aggregate({
-      where: { toUserId: session.tutorId },
-      _avg: { stars: true },
-      _count: { _all: true },
-    });
+      const agg = await tx.rating.aggregate({
+        where: { toUserId: session.tutorId },
+        _avg: { stars: true },
+        _count: { _all: true },
+      });
 
-    await tx.tutorProfile.updateMany({
-      where: { userId: session.tutorId },
-      data: {
-        ...(agg._avg.stars != null ? { averageRating: agg._avg.stars } : {}),
-        totalRatingsCount: agg._count._all,
-      },
-    });
+      await tx.tutorProfile.updateMany({
+        where: { userId: session.tutorId },
+        data: {
+          ...(agg._avg.stars != null ? { averageRating: agg._avg.stars } : {}),
+          totalRatingsCount: agg._count._all,
+        },
+      });
 
-    let wallet = await tx.creditWallet.findUnique({ where: { userId: session.tutorId } });
-    if (!wallet) {
-      wallet = await tx.creditWallet.create({ data: { userId: session.tutorId } });
-    }
+      let wallet = await tx.creditWallet.findUnique({ where: { userId: session.tutorId } });
+      if (!wallet) {
+        wallet = await tx.creditWallet.create({ data: { userId: session.tutorId } });
+      }
 
-    const nextBalance = wallet.balanceMicrocredits + amountMicro;
-    await tx.transaction.create({
-      data: {
-        walletId: wallet.id,
-        actorUserId: user.id,
-        type: TransactionType.CREDIT,
-        amountMicrocredits: amountMicro,
-        balanceAfterMicrocredits: nextBalance,
-        idempotencyKey,
-        referenceKind: "SESSION_RATING",
-        referenceId: input.sessionId,
-        metadata: { stars: input.stars },
-      },
-    });
+      const nextBalance = wallet.balanceMicrocredits + amountMicro;
+      await tx.transaction.create({
+        data: {
+          walletId: wallet.id,
+          actorUserId: user.id,
+          type: TransactionType.CREDIT,
+          amountMicrocredits: amountMicro,
+          balanceAfterMicrocredits: nextBalance,
+          idempotencyKey,
+          referenceKind: "SESSION_RATING",
+          referenceId: input.sessionId,
+          metadata: { stars: input.stars },
+        },
+      });
 
-    await tx.creditWallet.update({
-      where: { id: wallet.id },
-      data: {
-        balanceMicrocredits: nextBalance,
-        version: { increment: 1 },
-      },
-    });
-  });
+      await tx.creditWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balanceMicrocredits: nextBalance,
+          version: { increment: 1 },
+        },
+      });
+
+      const studentFeeKey = `student-session-fee:${input.sessionId}`;
+      const dupStudentFee = await tx.transaction.findUnique({ where: { idempotencyKey: studentFeeKey } });
+      if (!dupStudentFee && shouldDebitLearnerSessionFeeOnRating()) {
+        let studentWallet = await tx.creditWallet.findUnique({ where: { userId: user.id } });
+        if (!studentWallet) {
+          studentWallet = await tx.creditWallet.create({ data: { userId: user.id } });
+        }
+        if (studentWallet.balanceMicrocredits < STUDENT_SESSION_FEE_MICRO) {
+          throw new Error(
+            "Not enough credits in your wallet to pay the session fee. Add credits from Profile, or set NEXT_PUBLIC_LEARNLOOP_DEMO=1 in dev for a waived demo fee.",
+          );
+        }
+        const nextStudentBal = studentWallet.balanceMicrocredits - STUDENT_SESSION_FEE_MICRO;
+        await tx.transaction.create({
+          data: {
+            walletId: studentWallet.id,
+            actorUserId: user.id,
+            type: TransactionType.DEBIT,
+            amountMicrocredits: -STUDENT_SESSION_FEE_MICRO,
+            balanceAfterMicrocredits: nextStudentBal,
+            idempotencyKey: studentFeeKey,
+            referenceKind: "SESSION_RATING",
+            referenceId: input.sessionId,
+            metadata: { kind: "learner_session_fee" },
+          },
+        });
+        await tx.creditWallet.update({
+          where: { id: studentWallet.id },
+          data: {
+            balanceMicrocredits: nextStudentBal,
+            version: { increment: 1 },
+          },
+        });
+      }
+    },
+    prismaInteractiveTransactionOptions,
+  );
 
   revalidatePath(`/dashboard/sessions/${input.sessionId}`);
   revalidatePath("/dashboard/profile");
@@ -814,7 +982,13 @@ export async function submitSessionRating(raw: unknown) {
     ],
   });
 
-  return { ok: true as const, tutorPayoutMicrocredits: amountMicro.toString() };
+  return {
+    ok: true as const,
+    tutorPayoutMicrocredits: amountMicro.toString(),
+    studentSessionFeeMicrocredits: shouldDebitLearnerSessionFeeOnRating()
+      ? STUDENT_SESSION_FEE_MICRO.toString()
+      : "0",
+  };
 }
 
 export async function getLeaderboardRows() {

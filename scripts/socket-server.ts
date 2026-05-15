@@ -46,6 +46,30 @@ const CORS_ORIGINS = (process.env.SOCKET_CORS_ORIGINS ?? "http://localhost:3000,
   .map((s) => s.trim())
   .filter(Boolean);
 
+/** When Next is opened via LAN IP (e.g. http://192.168.x.x:3000), Origin is not localhost — allow private dev hosts unless SOCKET_CORS_STRICT=1. */
+function isPermissiveLocalDevOrigin(origin: string | undefined): boolean {
+  if (process.env.SOCKET_CORS_STRICT === "1") return false;
+  if (process.env.NODE_ENV === "production") return false;
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const h = u.hostname;
+    if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1") return true;
+    if (h.endsWith(".localhost")) return true;
+    if (h.endsWith(".local")) return true;
+    const oct = h.split(".").map((x) => Number.parseInt(x, 10));
+    if (oct.length !== 4 || oct.some((n) => Number.isNaN(n))) return false;
+    const [a, b] = oct;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 if (!SOCKET_JWT_SECRET || SOCKET_JWT_SECRET.length < 16) {
   console.error("[socket] SOCKET_JWT_SECRET (min 16 chars) is required");
   process.exit(1);
@@ -140,6 +164,36 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "POST" && req.url === "/internal/session-started") {
+    const secret = req.headers["x-socket-internal-secret"];
+    if (secret !== INTERNAL_SECRET) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const body = JSON.parse(raw) as { sessionId?: string };
+        const sid = typeof body?.sessionId === "string" ? body.sessionId : "";
+        if (!sid) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false }));
+          return;
+        }
+        io.to(sessionRoom(sid)).emit(ServerToClientEvents.SESSION_STARTED, { sessionId: sid });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false }));
+      }
+    });
+    return;
+  }
+
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, service: "learnloop-socket" }));
@@ -151,7 +205,20 @@ const httpServer = createServer((req, res) => {
 });
 
 io = new Server(httpServer, {
-  cors: { origin: CORS_ORIGINS, credentials: true },
+  cors: {
+    origin(origin, callback) {
+      if (!origin || CORS_ORIGINS.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      if (isPermissiveLocalDevOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`socket cors blocked origin: ${origin}`));
+    },
+    credentials: true,
+  },
   transports: ["websocket"],
 });
 

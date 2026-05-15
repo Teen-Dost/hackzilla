@@ -19,10 +19,7 @@ export function HeroSection() {
   const y = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [0, 80]);
 
   return (
-    <section ref={ref} className="relative overflow-hidden pt-10 pb-20 sm:pt-16 sm:pb-28">
-      <div className="pointer-events-none absolute inset-0 bg-mesh-gradient opacity-90" />
-      <div className="pointer-events-none absolute inset-0 bg-grid-fade opacity-40" />
-
+    <section ref={ref} className="relative overflow-hidden bg-background pt-10 pb-20 sm:pt-16 sm:pb-28">
       <motion.div style={{ y }} className="relative mx-auto max-w-6xl px-4 sm:px-6">
         <motion.div variants={staggerContainer} initial="hidden" animate="show" className="mx-auto max-w-3xl text-center">
           <motion.div variants={fadeInUp}>

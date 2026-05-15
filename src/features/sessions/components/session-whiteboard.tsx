@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Eraser, Pencil, Download } from "lucide-react";
+import { Eraser, Pencil, Download, Maximize2, Minimize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSocketIo } from "@/features/realtime/socket-io-provider";
 import { ClientToServerEvents, ServerToClientEvents } from "@/server/socket/events";
@@ -21,10 +21,12 @@ export function SessionWhiteboard({
   readOnly: boolean;
 }) {
   const { socket, connected } = useSocketIo();
+  const fullscreenRootRef = React.useRef<HTMLDivElement>(null);
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const [strokes, setStrokes] = React.useState<Stroke[]>([]);
   const [draft, setDraft] = React.useState<Stroke | null>(null);
+  const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [colorIdx, setColorIdx] = React.useState(0);
   const drawing = React.useRef(false);
 
@@ -34,7 +36,9 @@ export function SessionWhiteboard({
     const wrap = wrapRef.current;
     const rect = wrap?.getBoundingClientRect();
     const w = Math.max(1, Math.floor(rect?.width ?? 320));
-    const h = Math.max(1, Math.floor((rect?.width ?? 320) * 0.55));
+    const rectH = rect?.height ?? 0;
+    const h =
+      rectH > 96 ? Math.max(1, Math.floor(rectH)) : Math.max(1, Math.floor((rect?.width ?? 320) * 0.55));
     const dpr = Math.min(typeof window !== "undefined" ? window.devicePixelRatio ?? 1 : 1, 2);
     canvas.width = Math.floor(w * dpr);
     canvas.height = Math.floor(h * dpr);
@@ -43,7 +47,8 @@ export function SessionWhiteboard({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "hsl(var(--card))";
+    /* Canvas does not resolve CSS `var()` in fillStyle — literal white “paper” in all themes */
+    ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, w, h);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -64,13 +69,43 @@ export function SessionWhiteboard({
 
   React.useLayoutEffect(() => {
     redraw(strokes, draft);
-  }, [strokes, draft, redraw]);
+  }, [strokes, draft, redraw, isFullscreen]);
 
   React.useEffect(() => {
     const fn = () => redraw(strokes, draft);
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
   }, [redraw, strokes, draft]);
+
+  React.useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => redraw(strokes, draft));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [redraw, strokes, draft]);
+
+  React.useEffect(() => {
+    const onChange = () => {
+      setIsFullscreen(document.fullscreenElement === fullscreenRootRef.current);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  async function toggleFullscreen() {
+    const el = fullscreenRootRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        await el.requestFullscreen();
+      }
+    } catch {
+      /* Safari / embedded frames may block fullscreen */
+    }
+  }
 
   React.useEffect(() => {
     if (!socket?.connected) return;
@@ -156,9 +191,15 @@ export function SessionWhiteboard({
   }
 
   return (
-    <div ref={wrapRef} className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/20 p-1">
+    <div
+      ref={fullscreenRootRef}
+      className={cn(
+        "flex min-h-0 w-full min-w-0 flex-col gap-2",
+        isFullscreen && "box-border min-h-screen bg-background p-3 sm:p-5",
+      )}
+    >
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/20 p-1">
           <Pencil className="mx-1 h-3.5 w-3.5 text-muted-foreground" aria-hidden />
           {COLORS.map((c, i) => (
             <button
@@ -175,31 +216,53 @@ export function SessionWhiteboard({
             />
           ))}
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={downloadPng}>
-          <Download className="mr-1.5 h-3.5 w-3.5" />
-          Save PNG
+        <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={toggleFullscreen}>
+          {isFullscreen ? (
+            <>
+              <Minimize2 className="mr-1.5 h-3.5 w-3.5" />
+              Exit
+            </>
+          ) : (
+            <>
+              <Maximize2 className="mr-1.5 h-3.5 w-3.5" />
+              Fullscreen
+            </>
+          )}
         </Button>
-        <Button type="button" variant="outline" size="sm" disabled={readOnly} onClick={clearBoard}>
+        <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={downloadPng}>
+          <Download className="mr-1.5 h-3.5 w-3.5" />
+          PNG
+        </Button>
+        <Button type="button" variant="outline" size="sm" className="shrink-0" disabled={readOnly} onClick={clearBoard}>
           <Eraser className="mr-1.5 h-3.5 w-3.5" />
           Clear
         </Button>
-        {!connected ? (
-          <span className="text-xs text-muted-foreground">Local preview — run `npm run dev:realtime` to sync live.</span>
-        ) : (
-          <span className="text-xs text-muted-foreground">Synced over WebSocket</span>
-        )}
+        <span
+          className="w-full min-w-0 text-[11px] leading-snug text-muted-foreground sm:w-auto sm:max-w-[14rem] sm:truncate"
+          title={!connected ? "Drawing stays on this device until you run npm run dev:realtime." : "Strokes sync live over the socket server."}
+        >
+          {!connected ? "Local strokes only — start dev:realtime to sync." : "Live sync on"}
+        </span>
       </div>
-      <canvas
-        ref={canvasRef}
+      <div
+        ref={wrapRef}
         className={cn(
-          "w-full touch-none rounded-xl border border-border/70 bg-card",
-          readOnly ? "cursor-default opacity-90" : "cursor-crosshair",
+          "relative w-full min-w-0 overflow-hidden rounded-xl border border-border/70 bg-white dark:bg-muted/25",
+          isFullscreen ? "min-h-0 flex-1" : "aspect-[5/3] max-h-[min(52vh,420px)]",
         )}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      />
+      >
+        <canvas
+          ref={canvasRef}
+          className={cn(
+            "absolute inset-0 h-full w-full touch-none",
+            readOnly ? "cursor-default opacity-90" : "cursor-crosshair",
+          )}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        />
+      </div>
     </div>
   );
 }

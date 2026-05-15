@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { ensureLearnloopDemoWalletTopUp } from "@/lib/demo/demo-wallet-topup";
 
 export type SyncClerkUserInput = {
   id: string;
@@ -45,4 +46,10 @@ export async function upsertUserFromClerkSync(input: SyncClerkUserInput) {
       },
     },
   });
+
+  const row = await prisma.user.findUnique({
+    where: { clerkUserId: input.id },
+    select: { id: true },
+  });
+  if (row) await ensureLearnloopDemoWalletTopUp(row.id);
 }

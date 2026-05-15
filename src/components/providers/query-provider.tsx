@@ -28,8 +28,10 @@ function makeClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: demo ? 5 * 60_000 : 60_000,
+        /** SPA-like feel: fewer surprise refetches; lists opt into their own poll intervals. */
+        staleTime: demo ? 5 * 60_000 : 3 * 60_000,
         refetchOnWindowFocus: false,
+        refetchOnReconnect: true,
         gcTime: 1000 * 60 * 60 * 12,
       },
     },

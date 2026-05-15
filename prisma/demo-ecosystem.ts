@@ -12,6 +12,7 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 import { getLeaderboardDemoPeriodKey } from "../src/lib/demo/leaderboard-period";
+import { DEMO_WALLET_TOPUP_MICRO, grantWalletCreditOnce } from "../src/lib/demo/demo-wallet-topup";
 
 const PREFIX = "demo_ecosystem_";
 
@@ -264,6 +265,15 @@ export async function seedDemoEcosystem(prisma: PrismaClient) {
     userRows.push({ id: user.id, isTutor });
     if (isTutor) tutorIds.push(user.id);
     else studentIds.push(user.id);
+  }
+
+  for (const row of userRows) {
+    await grantWalletCreditOnce({
+      userId: row.id,
+      amountMicrocredits: DEMO_WALLET_TOPUP_MICRO,
+      idempotencyKey: `demo-ecosystem-wallet:${row.id}`,
+      metadata: { reason: "demo_ecosystem_seed" },
+    });
   }
 
   const achievements = [

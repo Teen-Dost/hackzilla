@@ -24,7 +24,7 @@ export function AIInsightsPageClient() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8">
+    <div className="mx-auto w-full max-w-full space-y-8">
       <div>
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-semibold tracking-tight">AI co-pilot</h1>

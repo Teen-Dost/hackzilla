@@ -24,7 +24,7 @@ export function LeaderboardClient() {
 
   if (isLoading && !data) {
     return (
-      <div className="mx-auto max-w-4xl space-y-8">
+      <div className="mx-auto w-full max-w-full space-y-8">
         <div className="space-y-2">
           <div className="h-8 w-48 animate-pulse rounded-md bg-muted/40" />
           <div className="h-4 w-72 max-w-full animate-pulse rounded-md bg-muted/30" />
@@ -48,7 +48,7 @@ export function LeaderboardClient() {
 
   if (isError) {
     return (
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto w-full max-w-full">
         <EmptyState
           icon={RefreshCw}
           title="Leaderboard unavailable"
@@ -66,10 +66,12 @@ export function LeaderboardClient() {
   const [first, second, third, ...rest] = rows;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-10">
+    <div className="mx-auto w-full max-w-full space-y-10">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Leaderboard</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Podium glow + monthly points — seeded demo fills this automatically.</p>
+        <p className="mt-1 max-w-2xl text-sm font-medium leading-relaxed text-foreground/72">
+          Podium glow + monthly points — seeded demo fills this automatically.
+        </p>
       </div>
 
       <div className="flex flex-wrap items-end justify-center gap-3 pb-4 sm:gap-4">
@@ -79,10 +81,10 @@ export function LeaderboardClient() {
           const h = idx === 1 ? "h-44" : "h-32";
           const glow =
             row.tier === "gold"
-              ? "bg-gradient-to-b from-amber-400/25 to-card shadow-glow"
+              ? "border-primary/30 bg-gradient-to-b from-primary/18 via-amber-400/20 to-card shadow-md ring-1 ring-primary/15"
               : row.tier === "silver"
-                ? "bg-gradient-to-b from-slate-300/20 to-card"
-                : "bg-gradient-to-b from-orange-400/20 to-card";
+                ? "border-border/80 bg-gradient-to-b from-slate-300/25 to-card shadow-md"
+                : "border-primary/20 bg-gradient-to-b from-primary/14 to-card shadow-md";
           return (
             <motion.div
               key={row.userId}
@@ -91,13 +93,15 @@ export function LeaderboardClient() {
               transition={{ ...springSnappy, delay: Math.min(idx * 0.06, 0.2) }}
               className={`flex w-[min(28vw,7.5rem)] max-w-[7.5rem] flex-col items-center sm:w-28 ${order}`}
             >
-              <div className={`relative mb-2 w-full rounded-2xl border border-border/60 p-2.5 shadow-card sm:p-3 ${glow}`}>
+              <div className={`relative mb-2 w-full rounded-2xl border p-2.5 sm:p-3 ${glow}`}>
                 {idx === 1 ? <Crown className="absolute -top-3 left-1/2 h-6 w-6 -translate-x-1/2 text-amber-400" aria-hidden /> : null}
                 <Avatar className="mx-auto h-12 w-12 border border-border/60 sm:h-14 sm:w-14">
                   <AvatarFallback>{row.name.slice(0, 2)}</AvatarFallback>
                 </Avatar>
               </div>
-              <div className={`w-full rounded-t-xl border border-border/60 bg-card/80 ${h} flex flex-col items-center justify-end pb-3 text-center`}>
+              <div
+                className={`w-full rounded-t-xl border-2 border-border/70 bg-card ${h} flex flex-col items-center justify-end pb-3 text-center shadow-sm`}
+              >
                 <p className="line-clamp-2 px-1 text-[11px] font-semibold leading-tight sm:text-xs">{row.name}</p>
                 <p className="mt-1 font-mono text-base font-bold tabular-nums text-primary sm:text-lg">
                   <AnimatedCounter value={row.points} />
@@ -119,7 +123,7 @@ export function LeaderboardClient() {
             initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: Math.min(0.12 + i * 0.025, 0.35) }}
-            className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/50 px-3 py-3 backdrop-blur-sm sm:px-4"
+            className="flex items-center justify-between gap-3 rounded-xl border-2 border-border/70 bg-card px-3 py-3 shadow-sm sm:px-4"
           >
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="w-5 shrink-0 font-mono text-xs text-muted-foreground sm:w-6 sm:text-sm">{row.rank}</span>

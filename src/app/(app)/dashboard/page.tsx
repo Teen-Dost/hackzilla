@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 
 export default function DashboardPage() {
   return (
-    <div className="mx-auto max-w-6xl space-y-8">
+    <div className="mx-auto w-full max-w-full space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium text-primary">Overview</p>

@@ -32,7 +32,7 @@ export function SessionsListClient({ initialSessions }: { initialSessions?: MySe
     refetchInterval: pageVisible ? pollMs : false,
     refetchOnMount: false,
     refetchOnReconnect: false,
-    staleTime: 45_000,
+    staleTime: 2 * 60_000,
     gcTime: 1000 * 60 * 60 * 12,
     ...(initialMeta
       ? { initialData: initialMeta.data, initialDataUpdatedAt: initialMeta.updatedAt }
@@ -41,7 +41,7 @@ export function SessionsListClient({ initialSessions }: { initialSessions?: MySe
 
   if (isLoading && !data) {
     return (
-      <div className="mx-auto max-w-3xl space-y-6">
+      <div className="mx-auto w-full max-w-full space-y-6">
         <div className="space-y-2">
           <div className="h-8 w-40 animate-pulse rounded-md bg-muted/40" />
           <div className="h-4 w-full max-w-md animate-pulse rounded-md bg-muted/30" />
@@ -53,7 +53,7 @@ export function SessionsListClient({ initialSessions }: { initialSessions?: MySe
 
   if (isError) {
     return (
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto w-full max-w-full">
         <EmptyState
           icon={AlertCircle}
           title="Couldn’t load sessions"
@@ -70,7 +70,7 @@ export function SessionsListClient({ initialSessions }: { initialSessions?: MySe
   const sessions = data ?? [];
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto w-full max-w-full space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>

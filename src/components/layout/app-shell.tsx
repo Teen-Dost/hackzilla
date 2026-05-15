@@ -35,7 +35,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <AppHeader onMenuClick={() => setMobileOpen(true)} onCommandClick={() => command.setOpen(true)} />
         <CommandMenu open={command.open} onOpenChange={command.setOpen} />
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain bg-mesh-gradient bg-grid-fade bg-[length:100%_100%,64px_64px] p-4 sm:p-6 lg:p-8">{children}</main>
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain bg-background p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
     </div>
   );

@@ -27,11 +27,15 @@ export function SessionRatingPanel({
     mutationFn: () => submitSessionRating({ sessionId, stars, comment: comment.trim() || undefined }),
     onSuccess: (res) => {
       const micro = BigInt(res.tutorPayoutMicrocredits);
+      const fee = BigInt(res.studentSessionFeeMicrocredits ?? "0");
       const display = Number(micro) / 1_000_000;
+      const feeDisplay = Number(fee) / 1_000_000;
       toast.success(
-        display >= 1
-          ? `Rated — your tutor earned about ${display.toFixed(1)} credits from this session.`
-          : "Thanks for rating — your tutor’s payout is on the way.",
+        feeDisplay > 0
+          ? `Rated — about ${feeDisplay.toFixed(1)} credits session fee from you; your tutor earned about ${display.toFixed(1)} credits.`
+          : display >= 1
+            ? `Rated — your tutor earned about ${display.toFixed(1)} credits from this session.`
+            : "Thanks for rating — your tutor’s payout is on the way.",
       );
       void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
     },

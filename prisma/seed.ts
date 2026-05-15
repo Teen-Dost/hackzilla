@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { seedDemoEcosystem } from "./demo-ecosystem";
+import { grantWalletCreditOnce } from "../src/lib/demo/demo-wallet-topup";
 
 /**
  * Default seed: Loop Bot + achievements only (fast, few DB rows).
@@ -48,6 +49,19 @@ async function main() {
       },
     },
   });
+
+  const loopBot = await prisma.user.findUnique({
+    where: { clerkUserId: DEMO_BOT_CLERK_ID },
+    select: { id: true },
+  });
+  if (loopBot) {
+    await grantWalletCreditOnce({
+      userId: loopBot.id,
+      amountMicrocredits: 250_000_000n,
+      idempotencyKey: "seed:learnloop-loop-bot-wallet",
+      metadata: { reason: "seed_loop_bot" },
+    });
+  }
 
   await prisma.achievement.upsert({
     where: { key: "FIRST_HELP_REQUEST" },
